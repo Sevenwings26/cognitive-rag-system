@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from core.config import settings
 from modules.auth.domain.tokens import TokenData
 from modules.auth.domain.models import UserRole, Organization, Department
-from modules.governance.domain.models import AssistantPersona, PromptTemplate, EnterpriseDocument
+from modules.governance.domain.models import AssistantPersona, PromptTemplate, EnterpriseDocument, IngestionJob
+from modules.rag_core.tools.sql_agent import DynamicSQLAgent
+from modules.connectors.security.sql_guard import SQLSecurityGuard
+from core.crypto import decrypt_connection_config
 from modules.governance.services.audit_logger import AuditLogger
 from modules.connectors.parsers.factory import ParserFactory
 from modules.connectors.sources.file_connector import FileConnector
@@ -21,6 +24,7 @@ from modules.rag_core.guardrails.prompt_engine import PromptEngine
 from modules.rag_core.registry.knowledge_registry import KnowledgeRegistry
 from modules.rag_core.orchestrator.query_planner import QueryPlanner
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
+
 
 logger = logging.getLogger("unified_rag_orchestrator")
 
@@ -135,7 +139,19 @@ class UnifiedRAGOrchestrator:
 
             return answer, [], True, 1.0
 
-        # --- ROUTE B: Adaptive Document-Grounded RAG Pipeline ---
+                # --- ROUTE B: Dynamic Text-to-SQL for Structured Database Inquiries ---
+        if plan.is_structured_sql and db:
+            sql_response = self._try_execute_dynamic_sql(
+                query=query,
+                user_context=user_context,
+                session_id=session_id,
+                org_name=org_name,
+                db=db
+            )
+            if sql_response is not None:
+                return sql_response
+
+        # --- ROUTE C: Adaptive Document-Grounded RAG Pipeline ---
         system_instruction = self.prompt_engine.render_template(system_template, template_vars)
 
         user_role_enum = UserRole(user_context.role) if hasattr(UserRole, user_context.role) else UserRole.MEMBER
@@ -228,15 +244,131 @@ class UnifiedRAGOrchestrator:
 
         return answer, sources, is_grounded, confidence
 
+    def _try_execute_dynamic_sql(
+        self,
+        query: str,
+        user_context: TokenData,
+        session_id: Optional[str],
+        org_name: str,
+        db: Session
+    ) -> Optional[Tuple[str, List[Dict[str, Any]], bool, float]]:
+        """
+        Dynamic Text-to-SQL Execution Route:
+        Queries tenant-connected relational databases using reflected DDL schema context,
+        LLM query synthesis, and read-only AST sandboxing.
+        """
+        try:
+            db_jobs = db.query(IngestionJob).filter(
+                IngestionJob.org_id == user_context.org_id,
+                IngestionJob.source_type.in_(["POSTGRES_DB", "POSTGRESQL", "MYSQL_DB", "MYSQL", "ORACLE_DB", "MSSQL_DB"])
+            ).all()
+
+            if not db_jobs:
+                return None
+
+            job = db_jobs[0]
+            decrypted_config = decrypt_connection_config(job.connection_config)
+            dialect = SQLSecurityGuard.canonical_dialect(job.source_type)
+            db_url = SQLSecurityGuard.build_connection_url(dialect, decrypted_config)
+
+            # Retrieve schema context from Qdrant or reflect directly
+            schema_filter = Filter(
+                must=[
+                    FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id)),
+                    FieldCondition(key="chunk_type", match=MatchValue(value="sql_schema"))
+                ]
+            )
+            schema_chunks = self.vector_store.search(
+                query_vector=self.llm.get_embeddings(query),
+                limit=5,
+                search_filter=schema_filter
+            )
+
+            if schema_chunks:
+                schema_context = "\n\n".join([chunk.payload.get("content", "") for chunk in schema_chunks])
+            else:
+                from modules.connectors.sources.databases.schema_reflector import DatabaseSchemaReflector
+                reflected = DatabaseSchemaReflector.reflect_schema(
+                    dialect=dialect,
+                    db_url=db_url,
+                    target_schema=decrypted_config.get("schema")
+                )
+                schema_context = "\n\n".join([t["ddl"] for t in reflected[:10]])
+
+            if not schema_context.strip():
+                return None
+
+            sql_result = DynamicSQLAgent.generate_and_execute_sql(
+                user_query=query,
+                schema_context=schema_context,
+                dialect=dialect,
+                db_url=db_url,
+                llm_service=self.llm
+            )
+
+            if sql_result.get("status") == "success":
+                rows = sql_result.get("rows", [])
+                cols = sql_result.get("columns", [])
+                executed_sql = sql_result.get("sql", "")
+
+                if rows:
+                    md_table_lines = ["| " + " | ".join(cols) + " |", "| " + " | ".join(["---"] * len(cols)) + " |"]
+                    for r in rows[:15]:
+                        row_vals = [str(r.get(c, "N/A")) for c in cols]
+                        md_table_lines.append("| " + " | ".join(row_vals) + " |")
+                    table_summary = f"\n\n**Database Query Results:**\n\n" + "\n".join(md_table_lines)
+                else:
+                    table_summary = "\n\n*The database query returned 0 matching records.*"
+
+                synthesis_prompt = (
+                    f"User Inquiry: {query}\n"
+                    f"Executed SQL: {executed_sql}\n"
+                    f"Result Data:\n{table_summary}\n\n"
+                    f"Provide a clear, direct, and professional answer to the user's inquiry based on this query result."
+                )
+                answer = self.llm.generate_text(
+                    synthesis_prompt,
+                    system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                )
+                full_answer = f"{answer}\n{table_summary}"
+
+                sources = [{
+                    "source_name": f"{job.name} ({dialect.upper()} Database)",
+                    "chunk_id": "sql_execution",
+                    "sql_query": executed_sql,
+                    "row_count": len(rows)
+                }]
+
+                AuditLogger.log(
+                    db=db,
+                    org_id=user_context.org_id,
+                    user_id=user_context.user_id,
+                    action="DYNAMIC_SQL_QUERY",
+                    resource_type="DATABASE",
+                    resource_id=job.id,
+                    details={"sql": executed_sql, "rows_returned": len(rows)}
+                )
+
+                return full_answer, sources, True, 0.95
+            else:
+                logger.warning(f"[DYNAMIC SQL] Execution failed: {sql_result.get('error')}. Falling back to document RAG.")
+                return None
+        except Exception as e:
+            logger.warning(f"[DYNAMIC SQL] Error: {e}. Falling back to document RAG.")
+            return None
+
     def extract_text_from_file(self, filename: str, file_bytes: bytes, mime_type: Optional[str] = None) -> str:
         parser = ParserFactory.get_parser(filename, mime_type)
         return parser.parse(file_bytes)
 
     def chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
         """
-        Intelligent chunker supporting tabular structured datasets (Excel/CSV)
-        as well as standard unstructured documents (PDF/DOCX/TXT).
+        Token-budgeted, boundary-aware chunker supporting tabular structured datasets
+        (Excel/CSV) as well as standard unstructured documents (PDF/DOCX/TXT).
+        Guarantees chunks respect sentence/paragraph boundaries and never clip against
+        the embedding model context window (~4 chars per token safety budget).
         """
+        import re
         if not text or not text.strip():
             return []
 
@@ -260,7 +392,6 @@ class UnifiedRAGOrchestrator:
 
                 header_context = "\n".join(header_lines) + "\n\n" if header_lines else ""
 
-                # Bundle 6 rows per chunk to preserve row completeness and density
                 batch_size = 6
                 for i in range(0, len(row_lines), batch_size):
                     batch = row_lines[i:i + batch_size]
@@ -269,15 +400,59 @@ class UnifiedRAGOrchestrator:
 
             return chunks if chunks else [text]
 
-        # 2. Standard Document Chunking (Paragraph/Word Split)
+        # 2. Token-Budgeted Boundary-Aware Chunking (512 tokens ~= 2000 characters)
+        max_chars = 2000
+        overlap_chars = 200
+
+        paragraphs = text.split("\n\n")
         chunks = []
-        words = text.split()
-        step = max(chunk_size - overlap, 1)
-        for i in range(0, len(words), step):
-            chunk = " ".join(words[i:i + chunk_size])
-            if chunk.strip():
-                chunks.append(chunk)
-        return chunks
+        current_chunk = []
+        current_len = 0
+
+        for p in paragraphs:
+            p_str = p.strip()
+            if not p_str:
+                continue
+
+            if len(p_str) > max_chars:
+                sentences = re.split(r'(?<=[.?!])\s+', p_str)
+                for s in sentences:
+                    s_len = len(s)
+                    if current_len + s_len > max_chars and current_chunk:
+                        joined = " ".join(current_chunk).strip()
+                        if joined:
+                            chunks.append(joined)
+                        overlap_tail = []
+                        running_ov = 0
+                        for item in reversed(current_chunk):
+                            if running_ov + len(item) <= overlap_chars:
+                                overlap_tail.insert(0, item)
+                                running_ov += len(item)
+                            else:
+                                break
+                        current_chunk = overlap_tail + [s]
+                        current_len = sum(len(x) for x in current_chunk) + len(current_chunk)
+                    else:
+                        current_chunk.append(s)
+                        current_len += s_len + 1
+            else:
+                p_len = len(p_str)
+                if current_len + p_len > max_chars and current_chunk:
+                    joined = "\n\n".join(current_chunk).strip()
+                    if joined:
+                        chunks.append(joined)
+                    current_chunk = [p_str]
+                    current_len = p_len
+                else:
+                    current_chunk.append(p_str)
+                    current_len += p_len + 2
+
+        if current_chunk:
+            joined = "\n\n".join(current_chunk).strip()
+            if joined:
+                chunks.append(joined)
+
+        return chunks if chunks else [text[:max_chars]]
 
     def ingest_document(
         self,
@@ -365,10 +540,17 @@ class UnifiedRAGOrchestrator:
             self.vector_store.upsert_chunks(points)
 
             if db is not None and db_chunk_records:
-                # Remove any stale chunks for this doc before inserting fresh ones
-                db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
-                db.bulk_save_objects(db_chunk_records)
-                db.commit()
+                try:
+                    # Remove any stale chunks for this doc before inserting fresh ones
+                    db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+                    db.bulk_save_objects(db_chunk_records)
+                    db.commit()
+                except Exception as db_err:
+                    logger.error(f"[DUAL-WRITE ROLLBACK] PostgreSQL chunk insert failed for doc '{document_id}': {db_err}. Purging Qdrant vectors...")
+                    db.rollback()
+                    doc_filter = Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))])
+                    self.vector_store.delete_by_filter(doc_filter)
+                    raise db_err
 
         except Exception as e:
             logger.error(f"Dual-write ingestion failed for doc '{document_id}': {e}")

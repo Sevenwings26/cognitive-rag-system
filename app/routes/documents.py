@@ -55,7 +55,14 @@ async def upload_document(
         access_level=access_level
     )
 
-    file_b64 = base64.b64encode(content).decode("utf-8")
+    # Claim-Check Pattern: Staging file to local storage/shared volume instead of in-band Redis Base64
+    from core.storage import StorageManager
+    staged_path = StorageManager.save_staged_file(
+        file_bytes=content,
+        filename=file.filename,
+        doc_id=doc_record.id,
+        org_id=current_user.org_id
+    )
     task_id = "sync-executed"
 
     try:
@@ -63,7 +70,7 @@ async def upload_document(
         task = async_ingest_document_task.delay(
             document_id=doc_record.id,
             filename=file.filename,
-            file_bytes_b64=file_b64,
+            staged_path=staged_path,
             org_id=current_user.org_id,
             department_id=dept_id,
             uploader_id=current_user.user_id,

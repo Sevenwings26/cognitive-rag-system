@@ -1,0 +1,45 @@
+name: multi-tenant-rag-system
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: wings#123
+      POSTGRES_DB: wings_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wings_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_vector_db
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_broker
+    ports:
+      - "6380:6379"
+    restart: always
+
+volumes:
+  postgres_data:
+  qdrant_data:
+
+networks:
+  default:
+    name: rag_network

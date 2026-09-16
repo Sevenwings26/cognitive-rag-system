@@ -68,6 +68,9 @@ class EnterpriseDocument(Base):
     status = Column(Enum(DocumentStatus), default=DocumentStatus.PENDING, nullable=False)
     error_message = Column(Text, nullable=True)
     chunk_count = Column(Integer, default=0)
+    job_id = Column(String(36), ForeignKey("ingestion_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    external_id = Column(String(255), nullable=True, index=True)
+    external_last_modified = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
@@ -113,6 +116,7 @@ class IngestionJob(Base):
     status = Column(Enum(IngestionJobStatus), default=IngestionJobStatus.PENDING, nullable=False)
     last_run_at = Column(DateTime, nullable=True)
     documents_processed_count = Column(Integer, default=0)
+    last_sync_token = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

@@ -1,54 +1,24 @@
+name: multi-tenant-rag-system
+
+include:
+  - docker-compose.storage.yml
+
 services:
-  postgres:
-    image: pgvector/pgvector:pg17
-    container_name: postgres_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: wings#123
-      POSTGRES_DB: wings_db
-    ports:
-      - "5434:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d wings_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant_vector_db
-    ports:
-      - "6335:6333"
-      - "6336:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    restart: always
-
-  redis:
-    image: redis:7-alpine
-    container_name: redis_broker
-    ports:
-      - "6380:6379"
-    restart: always
-
   wings_retrival_ai:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: wings_retrival_ai
     working_dir: /app
     ports:
       - "4500:4500"
     volumes:
-      - .:/app
+      - ..:/app
     environment:
       - PYTHONPATH=/app
     command: python -m uvicorn app.main:app --app-dir /app --host 0.0.0.0 --port 4500 --reload
     env_file:
-      - .env
+      - ../.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -62,17 +32,17 @@ services:
 
   wings_ingestion_worker:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: wings_ingestion_worker
     working_dir: /app
     volumes:
-      - .:/app
+      - ..:/app
     environment:
       - PYTHONPATH=/app
     command: python -m celery -A modules.tasks.celery_app worker --loglevel=info
     env_file:
-      - .env
+      - ../.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -84,9 +54,6 @@ services:
         condition: service_started
     restart: always
 
-volumes:
-  qdrant_data:
-  postgres_data:
-
-
-
+networks:
+  default:
+    name: rag_network

@@ -92,8 +92,10 @@ class S3Connector(BaseConnector):
                         content_bytes=content_bytes,
                         mime_type=mime_type,
                         metadata={
+                            "external_id": key,
                             "s3_bucket": self.bucket_name,
                             "s3_key": key,
+                            "etag": obj.get("ETag", "").strip('"'),
                             "last_modified": obj["LastModified"].isoformat() if hasattr(obj["LastModified"], "isoformat") else str(obj["LastModified"])
                         }
                     )

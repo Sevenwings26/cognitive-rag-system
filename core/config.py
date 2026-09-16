@@ -45,6 +45,7 @@ try:
         EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", 1024))
 
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
 
         DEFAULT_SCORE_THRESHOLD: float = 0.35
         DEFAULT_TOP_K: int = 3
@@ -100,6 +101,7 @@ except ImportError:
         EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", 1024))
 
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
 
         DEFAULT_SCORE_THRESHOLD: float = 0.35
         DEFAULT_TOP_K: int = 3

@@ -98,7 +98,7 @@ class GoogleDriveConnector(BaseConnector):
         if self.folder_id:
             query += f" and '{self.folder_id}' in parents"
 
-        url = f"https://www.googleapis.com/drive/v3/files?q={query}&fields=files(id,name,mimeType)"
+        url = f"https://www.googleapis.com/drive/v3/files?q={query}&fields=files(id,name,mimeType,modifiedTime,version,md5Checksum)"
         res = requests.get(url, headers=headers, timeout=20)
         if res.status_code != 200:
             logger.error(f"Google Drive fetch error: {res.text}")
@@ -118,5 +118,11 @@ class GoogleDriveConnector(BaseConnector):
                     filename=name,
                     content_bytes=f_res.content,
                     mime_type=mime,
-                    metadata={"google_file_id": file_id}
+                    metadata={
+                        "external_id": file_id,
+                        "google_file_id": file_id,
+                        "last_modified": item.get("modifiedTime"),
+                        "etag": item.get("md5Checksum") or item.get("version")
+                    }
                 )
+

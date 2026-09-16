@@ -1,5 +1,6 @@
 # modules/governance/repositories/document_repository.py
-from typing import List, Optional
+from typing import List, Optional, Set
+from datetime import datetime
 from sqlalchemy.orm import Session
 from modules.auth.domain.models import AccessLevel
 from modules.governance.domain.models import EnterpriseDocument, DocumentStatus, IngestionJob, IngestionJobStatus
@@ -15,7 +16,10 @@ class DocumentRepository:
         file_hash: str,
         file_size_bytes: int,
         mime_type: str,
-        access_level: AccessLevel
+        access_level: AccessLevel,
+        job_id: Optional[str] = None,
+        external_id: Optional[str] = None,
+        external_last_modified: Optional[datetime] = None
     ) -> EnterpriseDocument:
         doc = EnterpriseDocument(
             org_id=org_id,
@@ -26,7 +30,10 @@ class DocumentRepository:
             file_size_bytes=file_size_bytes,
             mime_type=mime_type,
             access_level=access_level,
-            status=DocumentStatus.PENDING
+            status=DocumentStatus.PENDING,
+            job_id=job_id,
+            external_id=external_id,
+            external_last_modified=external_last_modified
         )
         db.add(doc)
         db.commit()
@@ -39,6 +46,56 @@ class DocumentRepository:
             EnterpriseDocument.id == doc_id,
             EnterpriseDocument.org_id == org_id
         ).first()
+
+    @staticmethod
+    def get_document_by_external_id(
+        db: Session,
+        org_id: str,
+        job_id: str,
+        external_id: str
+    ) -> Optional[EnterpriseDocument]:
+        return db.query(EnterpriseDocument).filter(
+            EnterpriseDocument.org_id == org_id,
+            EnterpriseDocument.job_id == job_id,
+            EnterpriseDocument.external_id == external_id
+        ).first()
+
+    @staticmethod
+    def list_job_documents(db: Session, org_id: str, job_id: str) -> List[EnterpriseDocument]:
+        return db.query(EnterpriseDocument).filter(
+            EnterpriseDocument.org_id == org_id,
+            EnterpriseDocument.job_id == job_id
+        ).all()
+
+    @staticmethod
+    def purge_deleted_external_documents(
+        db: Session,
+        org_id: str,
+        job_id: str,
+        active_external_ids: Set[str],
+        orchestrator = None
+    ) -> int:
+        """Purges documents and vector points that no longer exist in the external source."""
+        existing_docs = db.query(EnterpriseDocument).filter(
+            EnterpriseDocument.org_id == org_id,
+            EnterpriseDocument.job_id == job_id,
+            EnterpriseDocument.external_id.isnot(None)
+        ).all()
+
+        purged_count = 0
+        for doc in existing_docs:
+            if doc.external_id not in active_external_ids:
+                if orchestrator:
+                    try:
+                        orchestrator.delete_document_vectors(doc.id, org_id, db=db)
+                    except Exception:
+                        pass
+                db.delete(doc)
+                purged_count += 1
+
+        if purged_count > 0:
+            db.commit()
+        return purged_count
 
     @staticmethod
     def update_document_status(
