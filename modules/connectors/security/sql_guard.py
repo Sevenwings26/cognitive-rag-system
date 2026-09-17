@@ -42,10 +42,15 @@ SUPPORTED_DB_SCHEMES = {
 _DIALECT_ALIASES = {
     "postgres": "postgresql",
     "postgresql": "postgresql",
+    "postgres_db": "postgresql",
+    "postgresql_db": "postgresql",
     "mysql": "mysql",
+    "mysql_db": "mysql",
     "mariadb": "mysql",
     "oracle": "oracle",
+    "oracle_db": "oracle",
     "mssql": "mssql",
+    "mssql_db": "mssql",
     "sqlserver": "mssql",
     "sqlite": "sqlite",
 }
@@ -343,6 +348,9 @@ class SQLSecurityGuard:
         except Exception:
             scheme = url.split(":", 1)[0] if ":" in url else "db"
             return f"{scheme}://***"
+
+    # Backward-compatible alias
+    build_connection_url = safe_build_db_url
 
     @classmethod
     def execute_read_only_query(

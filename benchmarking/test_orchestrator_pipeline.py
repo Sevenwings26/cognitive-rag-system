@@ -9,7 +9,9 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core.database import SessionLocal
-from modules.auth.domain.models import User, Organization, Department, UserRole
+from modules.auth.domain.models import User, Organization, Department, UserRole, AccessLevel
+from modules.governance.domain.models import EnterpriseDocument, DocumentStatus
+from modules.governance.repositories.document_repository import DocumentRepository
 from modules.auth.domain.tokens import TokenData
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
 from modules.rag_core.orchestrator.query_planner import QueryPlanner
@@ -102,7 +104,6 @@ def run_tests():
         print("\n--- [PATH 3] SCOPED IN-CHAT DOCUMENT QUERY (SESSION ISOLATION) ---")
         test_session_id = f"test-session-{uuid.uuid4().hex[:8]}"
         other_session_id = f"other-session-{uuid.uuid4().hex[:8]}"
-        doc_id = str(uuid.uuid4())
         
         session_doc_content = (
             "CONFIDENTIAL IN-CHAT DOCUMENT FOR SESSION ONLY.\n"
@@ -111,11 +112,25 @@ def run_tests():
             "Key Lead: Chief Architect Marcus Thorne."
         )
         
+        # Create parent document record in relational database first
+        doc_record = DocumentRepository.create_document(
+            db=db,
+            org_id=org.id,
+            department_id=user.department_id or "",
+            uploader_id=user.id,
+            filename="session_aurora_brief.txt",
+            file_hash=uuid.uuid4().hex,
+            file_size_bytes=len(session_doc_content.encode("utf-8")),
+            mime_type="text/plain",
+            access_level=AccessLevel.DEPARTMENT
+        )
+        print(f"  Created parent EnterpriseDocument: id={doc_record.id}")
+
         print(f"  Ingesting session-scoped document into session_id='{test_session_id}'...")
         chunk_count = orchestrator.ingest_document(
             filename="session_aurora_brief.txt",
             file_bytes=session_doc_content.encode("utf-8"),
-            document_id=doc_id,
+            document_id=doc_record.id,
             org_id=org.id,
             department_id=user.department_id,
             uploader_id=user.id,
@@ -124,6 +139,7 @@ def run_tests():
             mime_type="text/plain",
             db=db
         )
+        DocumentRepository.update_document_status(db, doc_record.id, DocumentStatus.INDEXED, chunk_count=chunk_count)
         print(f"  Successfully ingested {chunk_count} chunk(s) for session '{test_session_id}'.")
 
         # Query targeting this specific session
@@ -161,11 +177,12 @@ def run_tests():
         assert len(sources_cross) == 0, f"Security violation: Chunks leaked across sessions! Found: {sources_cross}"
         print("  [PASS] Cross-session boundary strictly enforced (0 chunks leaked).")
 
-        # Cleanup: Delete session vectors
+        # Cleanup: Delete session vectors and relational document
         print(f"  Cleaning up session vectors for '{test_session_id}'...")
         orchestrator.delete_session_vectors(test_session_id)
-        orchestrator.delete_document_vectors(doc_id, org.id, db=db)
-        print("  [PASS] Session vectors and test chunks cleaned up successfully.")
+        orchestrator.delete_document_vectors(doc_record.id, org.id, db=db)
+        DocumentRepository.delete_document(db, doc_record.id, org.id)
+        print("  [PASS] Session vectors, chunks, and parent test document cleaned up successfully.")
 
         print("\n" + "=" * 80)
         print("ALL 3 RETRIEVAL PIPELINE EXECUTION PATHS VERIFIED SUCCESSFULLY!")
