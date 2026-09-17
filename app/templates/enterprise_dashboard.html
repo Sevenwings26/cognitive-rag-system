@@ -242,6 +242,7 @@
     {% include "components/modals/user_modal.html" %}
     {% include "components/modals/dept_modal.html" %}
     {% include "components/modals/doc_modal.html" %}
+    {% include "components/modals/doc_edit_modal.html" %}
     {% include "components/modals/persona_modal.html" %}
     {% include "components/modals/prompt_modal.html" %}
     {% include "components/modals/job_modal.html" %}
@@ -533,6 +534,9 @@
                                 <td>${formatDate(doc.created_at)}</td>
                                 <td>
                                     <div class="flex items-center gap-1">
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="handleEditDocument('${doc.id}', '${escapeHTML(doc.filename)}', '${escapeHTML(doc.access_level)}', '${escapeHTML(doc.department_id || '')}')" title="Edit Access Clearance & Department">
+                                            ✏️ Edit
+                                        </button>
                                         <button type="button" class="btn btn-outline btn-sm" onclick="handleReindexDocument('${doc.id}', '${escapeHTML(doc.filename)}')" title="Purge and re-index vector chunks">
                                             🔄 Re-index
                                         </button>
@@ -735,18 +739,68 @@
     async function handleDeleteDocument(docId, filename) {
         const confirmed = await Modal.confirm(
             'Purge Document & Vectors?',
-            `Are you sure you want to permanently delete "${filename}" and all its vector embeddings?`,
+            `Are you sure you want to permanently delete "${filename}"? This will purge document metadata, relational chunks, and cascade deletion of all associated vector embeddings from Qdrant.`,
             'Yes, Purge Document',
             'warning'
         );
         if (!confirmed) return;
 
         try {
-            await fetchAPI(`/documents/${docId}`, { method: 'DELETE' });
-            Toast.success('Document Purged', `"${filename}" removed successfully.`);
+            await fetchAPI(`/enterprise/documents/${docId}`, { method: 'DELETE' });
+            Toast.success('Document Purged', `"${filename}" and associated vector embeddings removed successfully.`);
             refreshDashboardData();
         } catch (err) {
             Toast.error('Delete Failed', err.message);
+        }
+    }
+
+    function handleEditDocument(docId, filename, accessLevel, departmentId) {
+        document.getElementById('edit-doc-id').value = docId;
+        document.getElementById('edit-doc-filename').value = filename;
+        document.getElementById('edit-doc-acl-select').value = accessLevel || 'DEPARTMENT';
+
+        const deptSelect = document.getElementById('edit-doc-dept-select');
+        deptSelect.innerHTML = '<option value="">-- No Department Scope (Tenant-Wide) --</option>';
+        if (cachedDepartments && cachedDepartments.length > 0) {
+            cachedDepartments.forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = d.id;
+                opt.textContent = `${d.name} (${d.code})`;
+                if (d.id === departmentId) opt.selected = true;
+                deptSelect.appendChild(opt);
+            });
+        }
+
+        openModal('doc-edit-modal');
+    }
+
+    async function handleUpdateDocument(e) {
+        e.preventDefault();
+        const docId = document.getElementById('edit-doc-id').value;
+        const btn = document.getElementById('btn-update-doc');
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner" style="width:14px; height:14px; border-width:2px;"></span> Saving...`;
+
+        try {
+            const acl = document.getElementById('edit-doc-acl-select').value;
+            const deptId = document.getElementById('edit-doc-dept-select').value || null;
+
+            await fetchAPI(`/enterprise/documents/${docId}`, {
+                method: 'PATCH',
+                body: {
+                    access_level: acl,
+                    target_department_id: deptId
+                }
+            });
+
+            closeModal('doc-edit-modal');
+            Toast.success('Document Updated', 'Access clearance and department updated successfully.');
+            refreshDashboardData();
+        } catch (err) {
+            Toast.error('Update Failed', err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
         }
     }
 
@@ -821,6 +875,14 @@
     }
 
     async function openJobModal() {
+        document.getElementById('create-job-form').reset();
+        document.getElementById('job-edit-id').value = '';
+        document.getElementById('job-modal-title-text').textContent = '🔌 Connect Knowledge Source';
+        document.getElementById('job-modal-subtitle').textContent = 'Configure schema-driven ingestion pipeline with instant pre-flight connection testing';
+        document.getElementById('btn-submit-job').textContent = 'Save & Register Job';
+        const srcSection = document.getElementById('job-source-type-section');
+        if (srcSection) srcSection.style.display = 'block';
+
         await loadConnectorSchemas();
         renderConnectorCards();
         selectConnectorType(currentSelectedConnector || 'POSTGRES_DB');
@@ -1031,35 +1093,126 @@
         }
     }
 
-    async function handleCreateJob(e) {
+    async function handleSaveJob(e) {
         e.preventDefault();
+        const editId = document.getElementById('job-edit-id').value;
+        const isEdit = Boolean(editId);
+
         const btn = document.getElementById('btn-submit-job');
         btn.disabled = true;
-        btn.innerHTML = `<span class="spinner" style="width:14px; height:14px; border-width:2px;"></span> Registering Pipeline...`;
+        btn.innerHTML = `<span class="spinner" style="width:14px; height:14px; border-width:2px;"></span> ${isEdit ? 'Updating Pipeline...' : 'Registering Pipeline...'}`;
 
         const config = collectDynamicConfig();
 
         try {
-            await fetchAPI('/enterprise/jobs/create', {
-                method: 'POST',
-                body: {
-                    name: document.getElementById('job-name').value.trim(),
-                    source_type: currentSelectedConnector,
-                    access_level: document.getElementById('job-acl').value,
-                    target_department_id: document.getElementById('job-dept-select').value || null,
-                    cron_schedule: document.getElementById('job-cron').value.trim() || null,
-                    connection_config: config
-                }
-            });
-            closeModal('job-modal');
+            if (isEdit) {
+                await fetchAPI(`/enterprise/jobs/${editId}`, {
+                    method: 'PUT',
+                    body: {
+                        name: document.getElementById('job-name').value.trim(),
+                        access_level: document.getElementById('job-acl').value,
+                        target_department_id: document.getElementById('job-dept-select').value || null,
+                        cron_schedule: document.getElementById('job-cron').value.trim() || null,
+                        connection_config: config
+                    }
+                });
+                closeModal('job-modal');
+                Toast.success('Pipeline Updated', `Connector pipeline "${document.getElementById('job-name').value.trim()}" updated successfully.`);
+            } else {
+                await fetchAPI('/enterprise/jobs/create', {
+                    method: 'POST',
+                    body: {
+                        name: document.getElementById('job-name').value.trim(),
+                        source_type: currentSelectedConnector,
+                        access_level: document.getElementById('job-acl').value,
+                        target_department_id: document.getElementById('job-dept-select').value || null,
+                        cron_schedule: document.getElementById('job-cron').value.trim() || null,
+                        connection_config: config
+                    }
+                });
+                closeModal('job-modal');
+                Toast.success('Pipeline Registered', `Data source connector "${currentSelectedConnector}" configured successfully.`);
+            }
             document.getElementById('create-job-form').reset();
-            Toast.success('Pipeline Registered', `Data source connector "${currentSelectedConnector}" configured successfully.`);
             refreshDashboardData();
         } catch (err) {
-            Toast.error('Registration Failed', err.message);
+            Toast.error(isEdit ? 'Update Failed' : 'Registration Failed', err.message);
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Save & Register Job';
+            btn.textContent = isEdit ? 'Update Pipeline' : 'Save & Register Job';
+        }
+    }
+
+    async function handleEditJob(jobId) {
+        try {
+            const job = await fetchAPI(`/enterprise/jobs/${jobId}`);
+            if (!job) return;
+
+            await loadConnectorSchemas();
+
+            document.getElementById('create-job-form').reset();
+            document.getElementById('job-edit-id').value = job.id;
+            document.getElementById('job-modal-title-text').textContent = '✏️ Edit Knowledge Source';
+            document.getElementById('job-modal-subtitle').textContent = `Update pipeline configuration for "${job.name}" (${job.source_type})`;
+            document.getElementById('btn-submit-job').textContent = 'Update Pipeline';
+
+            // In edit mode, hide connector type cards to keep driver type locked
+            const srcSection = document.getElementById('job-source-type-section');
+            if (srcSection) srcSection.style.display = 'none';
+
+            currentSelectedConnector = job.source_type;
+            const schema = allConnectorSchemas.find(s => s.source_type === job.source_type);
+            if (schema) {
+                document.getElementById('selected-connector-badge').innerHTML = `${schema.icon} ${escapeHTML(schema.name)}`;
+                document.getElementById('connector-doc-hint').textContent = schema.description;
+                renderDynamicFields(schema);
+            }
+
+            // Populate governance fields
+            document.getElementById('job-name').value = job.name || '';
+            document.getElementById('job-acl').value = job.access_level || 'DEPARTMENT';
+            document.getElementById('job-dept-select').value = job.department_id || '';
+            document.getElementById('job-cron').value = job.cron_schedule || '';
+
+            // Populate dynamic connector fields
+            if (job.connection_config && typeof job.connection_config === 'object') {
+                Object.keys(job.connection_config).forEach(key => {
+                    const input = document.getElementById(`cfg-field-${key}`);
+                    if (input) {
+                        const val = job.connection_config[key];
+                        if (input.type === 'checkbox') {
+                            input.checked = Boolean(val);
+                        } else {
+                            input.value = val !== null && val !== undefined ? val : '';
+                        }
+                    }
+                });
+            }
+
+            document.getElementById('connection-test-result').style.display = 'none';
+            openModal('job-modal');
+        } catch (err) {
+            Toast.error('Load Job Failed', err.message);
+        }
+    }
+
+    async function handleDeleteJob(jobId, jobName) {
+        const confirmed = await Modal.confirm(
+            'Delete Pipeline & Purge Vectors?',
+            `Are you sure you want to permanently delete connector pipeline "${jobName}"? This will purge all associated document sources, database records, and cascade deletion of all vector points from Qdrant.`,
+            'Yes, Purge Everything',
+            'warning'
+        );
+        if (!confirmed) return;
+
+        try {
+            const res = await fetchAPI(`/enterprise/jobs/${jobId}`, { method: 'DELETE' });
+            Toast.success('Pipeline Purged', res.message || `Pipeline "${jobName}" deleted successfully.`);
+            cachedJobsList = cachedJobsList.filter(j => j.id !== jobId);
+            renderJobsTable();
+            refreshDashboardData();
+        } catch (err) {
+            Toast.error('Delete Failed', err.message);
         }
     }
 
@@ -1120,9 +1273,17 @@
                     <td><strong>${j.documents_processed_count}</strong> docs</td>
                     <td><span class="text-secondary text-xs">${lastRunStr}</span></td>
                     <td>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="handleTriggerJob('${j.id}', '${escapeHTML(j.name)}')">
-                            ▶ Sync Now
-                        </button>
+                        <div class="flex items-center gap-1">
+                            <button type="button" class="btn btn-outline btn-sm" onclick="handleTriggerJob('${j.id}', '${escapeHTML(j.name)}')" title="Trigger immediate sync">
+                                ▶ Sync
+                            </button>
+                            <button type="button" class="btn btn-outline btn-sm" onclick="handleEditJob('${j.id}')" title="Edit connector pipeline configuration">
+                                ✏️ Edit
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="handleDeleteJob('${j.id}', '${escapeHTML(j.name)}')" title="Purge pipeline & Qdrant vectors">
+                                🗑️
+                            </button>
+                        </div>
                     </td>
                 </tr>
             `;

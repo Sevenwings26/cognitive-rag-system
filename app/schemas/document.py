@@ -37,3 +37,27 @@ class IngestionJobResponse(BaseModel):
     last_run_at: Optional[str] = None
     documents_processed_count: int
     created_at: str
+
+class IngestionJobUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    access_level: Optional[AccessLevel] = None
+    target_department_id: Optional[str] = None
+    connection_config: Optional[Dict[str, Any]] = None
+    cron_schedule: Optional[str] = None
+
+class IngestionJobDetailResponse(BaseModel):
+    id: str
+    name: str
+    source_type: str
+    access_level: str
+    department_id: Optional[str] = None
+    status: str
+    last_run_at: Optional[str] = None
+    documents_processed_count: int
+    cron_schedule: Optional[str] = None
+    connection_config: Dict[str, Any]
+    created_at: str
+
+class DocumentUpdatePayload(BaseModel):
+    access_level: Optional[AccessLevel] = None
+    target_department_id: Optional[str] = None

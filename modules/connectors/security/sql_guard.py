@@ -303,11 +303,15 @@ class SQLSecurityGuard:
         elif canonical == "mssql":
             port = int(config.get("port", 1433))
             db = str(config.get("database", "master"))
-            driver = quote_plus("ODBC Driver 18 for SQL Server")
-            return (
-                f"mssql+pyodbc://{auth_part}{host}:{port}/{db}?"
-                f"driver={driver}&TrustServerCertificate=yes&ApplicationIntent=ReadOnly"
-            )
+            try:
+                import pyodbc
+                driver = quote_plus("ODBC Driver 18 for SQL Server")
+                return (
+                    f"mssql+pyodbc://{auth_part}{host}:{port}/{db}?"
+                    f"driver={driver}&TrustServerCertificate=yes&ApplicationIntent=ReadOnly"
+                )
+            except ImportError:
+                return f"mssql+pymssql://{auth_part}{host}:{port}/{db}"
 
         raise ValueError(f"Unsupported dialect: {dialect}")
 

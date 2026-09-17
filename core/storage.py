@@ -47,3 +47,20 @@ class StorageManager:
         except Exception as e:
             logger.warning(f"[STORAGE] Error deleting staged file {filepath}: {e}")
         return False
+
+    @classmethod
+    def purge_staged_files_for_doc(cls, doc_id: str, org_id: Optional[str] = None) -> int:
+        target_dir = cls.ensure_staging_dir(org_id)
+        purged = 0
+        try:
+            if os.path.exists(target_dir):
+                for fname in os.listdir(target_dir):
+                    if fname.startswith(f"{doc_id}_"):
+                        fpath = os.path.join(target_dir, fname)
+                        if os.path.isfile(fpath):
+                            os.remove(fpath)
+                            purged += 1
+                            logger.info(f"[STORAGE] Purged staged file for doc {doc_id}: {fname}")
+        except Exception as e:
+            logger.warning(f"[STORAGE] Error cleaning staged files for doc {doc_id}: {e}")
+        return purged

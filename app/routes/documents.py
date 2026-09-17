@@ -13,7 +13,8 @@ from modules.governance.domain.models import DocumentStatus
 from modules.governance.repositories.document_repository import DocumentRepository
 from modules.governance.services.audit_logger import AuditLogger
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
-from app.schemas.document import DocumentUploadResponse, DocumentItemResponse
+from core.storage import StorageManager
+from app.schemas.document import DocumentUploadResponse, DocumentItemResponse, DocumentUpdatePayload
 
 router = APIRouter(tags=["Document Ingestion & Management"])
 
@@ -138,17 +139,37 @@ def list_documents(
     ]
 
 @router.delete("/documents/{document_id}")
+@router.delete("/enterprise/documents/{document_id}")
 def delete_document(
     document_id: str,
     current_user: TokenData = Depends(require_role(["SUPER_ADMIN", "DEPT_ADMIN"])),
     db: Session = Depends(get_db),
     orchestrator: UnifiedRAGOrchestrator = Depends(get_orchestrator)
 ):
+    """Purges a document, associated vector points in Qdrant, relational chunks, and staged disk files."""
     doc = DocumentRepository.get_document_by_id(db, document_id, current_user.org_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    if current_user.role == "DEPT_ADMIN" and doc.department_id and doc.department_id != current_user.department_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete documents outside your department")
+
+    filename = doc.filename
+    job_id = doc.job_id
+
+    # 1. Cascade Qdrant vectors and relational chunks
     orchestrator.delete_document_vectors(document_id, current_user.org_id, db=db)
+
+    # 2. Purge local staged files
+    StorageManager.purge_staged_files_for_doc(document_id, current_user.org_id)
+
+    # 3. Synchronize parent job document count
+    if job_id:
+        job = DocumentRepository.get_ingestion_job(db, job_id, current_user.org_id)
+        if job and job.documents_processed_count > 0:
+            job.documents_processed_count -= 1
+
+    # 4. Purge document metadata record
     DocumentRepository.delete_document(db, document_id, current_user.org_id)
 
     AuditLogger.log(
@@ -158,10 +179,68 @@ def delete_document(
         action="DOCUMENT_DELETED",
         resource_type="DOCUMENT",
         resource_id=document_id,
-        details={"filename": doc.filename}
+        details={"filename": filename, "job_id": job_id}
     )
 
-    return {"status": "success", "message": f"Document '{doc.filename}' purged successfully"}
+    return {"status": "success", "message": f"Document '{filename}' purged successfully"}
+
+@router.patch("/documents/{document_id}")
+@router.patch("/enterprise/documents/{document_id}")
+@router.put("/enterprise/documents/{document_id}")
+def update_document(
+    document_id: str,
+    payload: DocumentUpdatePayload,
+    current_user: TokenData = Depends(require_role(["SUPER_ADMIN", "DEPT_ADMIN"])),
+    db: Session = Depends(get_db),
+    orchestrator: UnifiedRAGOrchestrator = Depends(get_orchestrator)
+):
+    """Updates document Access Clearance (ACL) and Department, cascading to chunks and Qdrant points."""
+    doc = DocumentRepository.get_document_by_id(db, document_id, current_user.org_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if current_user.role == "DEPT_ADMIN" and doc.department_id and doc.department_id != current_user.department_id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify documents outside your department")
+
+    dept_id = doc.department_id
+    if payload.target_department_id is not None:
+        dept_id = payload.target_department_id if current_user.role == "SUPER_ADMIN" else current_user.department_id
+
+    new_acl = payload.access_level or doc.access_level
+
+    # 1. Update EnterpriseDocument in DB
+    DocumentRepository.update_document_metadata(
+        db=db,
+        doc_id=document_id,
+        org_id=current_user.org_id,
+        access_level=new_acl,
+        department_id=dept_id
+    )
+
+    # 2. Cascade update to DocumentChunk rows and Qdrant vector payload
+    orchestrator.update_document_metadata(
+        document_id=document_id,
+        org_id=current_user.org_id,
+        access_level=new_acl.value if hasattr(new_acl, "value") else str(new_acl),
+        department_id=dept_id or "",
+        db=db
+    )
+
+    AuditLogger.log(
+        db=db,
+        org_id=current_user.org_id,
+        user_id=current_user.user_id,
+        action="DOCUMENT_UPDATED",
+        resource_type="DOCUMENT",
+        resource_id=document_id,
+        details={"filename": doc.filename, "access_level": str(new_acl), "department_id": dept_id}
+    )
+
+    return {
+        "status": "success",
+        "message": f"Document '{doc.filename}' access permissions updated successfully.",
+        "document_id": document_id
+    }
 
 @router.get("/documents/{document_id}/status")
 def get_document_indexing_status(

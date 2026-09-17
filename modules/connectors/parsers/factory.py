@@ -5,12 +5,15 @@ from modules.connectors.parsers.pdf_parser import PDFParser
 from modules.connectors.parsers.docx_parser import DocxParser
 from modules.connectors.parsers.text_parser import TextParser
 from modules.connectors.parsers.tabular_parser import TabularParser
+from modules.connectors.parsers.pptx_parser import PPTXParser
 
 class ParserFactory:
     _parsers = {
         ".pdf": PDFParser(),
         ".docx": DocxParser(),
         ".doc": DocxParser(),
+        ".pptx": PPTXParser(),
+        ".ppt": PPTXParser(),
         ".txt": TextParser(),
         ".md": TextParser(),
         ".json": TextParser(),

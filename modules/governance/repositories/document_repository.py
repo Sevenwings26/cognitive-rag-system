@@ -184,3 +184,55 @@ class DocumentRepository:
     @staticmethod
     def get_ingestion_job(db: Session, job_id: str, org_id: str) -> Optional[IngestionJob]:
         return db.query(IngestionJob).filter(IngestionJob.id == job_id, IngestionJob.org_id == org_id).first()
+
+    @staticmethod
+    def update_ingestion_job(
+        db: Session,
+        job: IngestionJob,
+        name: Optional[str] = None,
+        access_level: Optional[AccessLevel] = None,
+        department_id: Optional[str] = None,
+        connection_config: Optional[dict] = None,
+        cron_schedule: Optional[str] = None
+    ) -> IngestionJob:
+        if name is not None:
+            job.name = name
+        if access_level is not None:
+            job.access_level = access_level
+        if department_id is not None:
+            job.department_id = department_id
+        if connection_config is not None:
+            job.connection_config = connection_config
+        if cron_schedule is not None:
+            job.cron_schedule = cron_schedule
+        db.commit()
+        db.refresh(job)
+        return job
+
+    @staticmethod
+    def delete_ingestion_job(db: Session, job: IngestionJob) -> bool:
+        db.delete(job)
+        db.commit()
+        return True
+
+    @staticmethod
+    def update_document_metadata(
+        db: Session,
+        doc_id: str,
+        org_id: str,
+        access_level: Optional[AccessLevel] = None,
+        department_id: Optional[str] = None
+    ) -> Optional[EnterpriseDocument]:
+        doc = db.query(EnterpriseDocument).filter(
+            EnterpriseDocument.id == doc_id,
+            EnterpriseDocument.org_id == org_id
+        ).first()
+        if not doc:
+            return None
+        if access_level is not None:
+            doc.access_level = access_level
+        if department_id is not None:
+            doc.department_id = department_id
+        db.commit()
+        db.refresh(doc)
+        return doc

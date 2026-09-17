@@ -142,8 +142,8 @@ class ConnectorRegistry:
                     ConnectorFieldMeta(name="tenant_id", title="Azure AD Tenant ID", placeholder="xxxx-xxxx-xxxx", required=True),
                     ConnectorFieldMeta(name="client_id", title="Application (Client) ID", placeholder="yyyy-yyyy-yyyy", required=True),
                     ConnectorFieldMeta(name="client_secret", title="Client Secret Value", field_type=FieldType.PASSWORD, is_secret=True, required=True),
-                    ConnectorFieldMeta(name="site_url", title="SharePoint Site URL", placeholder="https://company.sharepoint.com/sites/knowledge", required=True),
-                    ConnectorFieldMeta(name="folder_path", title="Document Library Folder", default_value="/Shared Documents", required=False)
+                    ConnectorFieldMeta(name="site_url", title="SharePoint Site URL or Site ID", placeholder="https://company.sharepoint.com/sites/knowledge or domain,site-guid,web-guid", required=True),
+                    ConnectorFieldMeta(name="folder_path", title="Document Library / Folder", default_value="/Shared Documents", placeholder="/Shared Documents or /departments (leave default for all)", required=False)
                 ]
             ),
             # --- Wikis & Productivity ---

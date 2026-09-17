@@ -78,6 +78,6 @@ openpyxl>=3.1.2
 sqlparse>=0.5.0
 pgvector>=0.3.6
 psycopg
-
-
-
+pymysql>=1.2.0
+oracledb>=26.0.0
+pymssql>=2.4.1

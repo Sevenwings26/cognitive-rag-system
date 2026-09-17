@@ -589,4 +589,54 @@ class UnifiedRAGOrchestrator:
                 db.rollback()
 
         return qdrant_deleted
-        
+
+    def update_document_metadata(
+        self,
+        document_id: str,
+        org_id: str,
+        access_level: Optional[str] = None,
+        department_id: Optional[str] = None,
+        db: Optional[Any] = None
+    ) -> bool:
+        """
+        Updates ACL and department scope metadata across relational DocumentChunks and Qdrant points.
+        """
+        from modules.governance.domain.models import DocumentChunk
+
+        payload_updates: Dict[str, Any] = {}
+        if access_level is not None:
+            payload_updates["access_level"] = access_level
+        if department_id is not None:
+            payload_updates["department_id"] = department_id
+
+        if not payload_updates:
+            return True
+
+        # 1. Update Qdrant vectors
+        doc_filter = Filter(
+            must=[
+                FieldCondition(key="org_id", match=MatchValue(value=org_id)),
+                FieldCondition(key="document_id", match=MatchValue(value=document_id))
+            ]
+        )
+        qdrant_updated = self.vector_store.set_payload_by_filter(doc_filter, payload_updates)
+
+        # 2. Update relational chunks
+        if db is not None:
+            try:
+                db_updates = {}
+                if access_level is not None:
+                    db_updates["access_level"] = access_level
+                if department_id is not None:
+                    db_updates["department_id"] = department_id
+
+                db.query(DocumentChunk).filter(
+                    DocumentChunk.document_id == document_id,
+                    DocumentChunk.org_id == org_id
+                ).update(db_updates)
+                db.commit()
+            except Exception as e:
+                logger.error(f"Failed to update relational chunks for doc '{document_id}': {e}")
+                db.rollback()
+
+        return qdrant_updated

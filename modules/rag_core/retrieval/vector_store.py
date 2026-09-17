@@ -144,6 +144,19 @@ class VectorStoreService:
             logger.error(f"Error deleting vectors with filter: {e}")
             return False
 
+    def set_payload_by_filter(self, points_filter: Filter, payload: Dict[str, Any]) -> bool:
+        """Updates payload metadata for points matching a specific filter."""
+        try:
+            self.client.set_payload(
+                collection_name=self.collection_name,
+                payload=payload,
+                points=points_filter
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error updating vector payload with filter: {e}")
+            return False
+
     def get_collection_stats(self) -> Dict[str, Any]:
         """Returns collection size, point count, indexed vector count, and health status."""
         try:

@@ -1,0 +1,47 @@
+<!-- app/templates/components/modals/doc_edit_modal.html -->
+<div id="doc-edit-modal" class="modal-backdrop" onclick="if(event.target === this) closeModal('doc-edit-modal')">
+    <div class="modal-box">
+        <div class="modal-header">
+            <div>
+                <h3 class="modal-title" style="display: flex; align-items: center; gap: 8px;">
+                    <span>✏️ Edit Document Access & Clearance</span>
+                </h3>
+                <p class="text-sm text-secondary" style="margin-top: 2px;">Update document access control list (ACL) and departmental scope</p>
+            </div>
+            <button type="button" class="modal-close" onclick="closeModal('doc-edit-modal')" aria-label="Close modal">&times;</button>
+        </div>
+        <form id="edit-doc-form" onsubmit="handleUpdateDocument(event)">
+            <input type="hidden" id="edit-doc-id" value="">
+            
+            <div class="form-group">
+                <label class="form-label" for="edit-doc-filename">Document Filename</label>
+                <input type="text" id="edit-doc-filename" class="form-input" disabled style="opacity: 0.8; cursor: not-allowed;">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="edit-doc-acl-select">Security Access Clearance (ACL)</label>
+                <select id="edit-doc-acl-select" class="form-select" required>
+                    <option value="DEPARTMENT">DEPARTMENT (Clearance for Department Members)</option>
+                    <option value="PUBLIC">PUBLIC (Searchable Tenant-Wide across all depts)</option>
+                    <option value="CONFIDENTIAL">CONFIDENTIAL (DeptAdmins & SuperAdmins only)</option>
+                    <option value="RESTRICTED">RESTRICTED (Private to Uploader & SuperAdmin)</option>
+                </select>
+                <span class="text-xs text-muted" style="margin-top: 4px; display: block;">
+                    Modifying ACL will cascade updates across all vector chunks in Qdrant and relational stores.
+                </span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="edit-doc-dept-select">Target Department Scope</label>
+                <select id="edit-doc-dept-select" class="form-select"></select>
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('doc-edit-modal')">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="btn-update-doc">
+                    <span>Save Changes</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>

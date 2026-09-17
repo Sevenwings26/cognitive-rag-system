@@ -4,23 +4,24 @@
         <div class="modal-header">
             <div>
                 <h3 class="modal-title" style="display: flex; align-items: center; gap: 8px;">
-                    <span>🔌 Connect Knowledge Source</span>
+                    <span id="job-modal-title-text">🔌 Connect Knowledge Source</span>
                     <span id="selected-connector-badge" class="badge badge-info">PostgreSQL</span>
                 </h3>
-                <p class="text-sm text-secondary" style="margin-top: 2px;">Configure schema-driven ingestion pipeline with instant pre-flight connection testing</p>
+                <p class="text-sm text-secondary" id="job-modal-subtitle" style="margin-top: 2px;">Configure schema-driven ingestion pipeline with instant pre-flight connection testing</p>
             </div>
             <button type="button" class="modal-close" onclick="closeModal('job-modal')" aria-label="Close modal">&times;</button>
         </div>
 
         <!-- 1. Categorized Source Selection Cards -->
-        <div style="margin-bottom: 20px;">
+        <div id="job-source-type-section" style="margin-bottom: 20px;">
             <label class="form-label" style="margin-bottom: 8px; font-weight: 600;">1. Select Data Source Type</label>
             <div id="connector-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px;">
                 <!-- Dynamically populated from /enterprise/connectors/schemas -->
             </div>
         </div>
 
-        <form id="create-job-form" onsubmit="handleCreateJob(event)">
+        <form id="create-job-form" onsubmit="handleSaveJob(event)">
+            <input type="hidden" id="job-edit-id" value="">
             <!-- 2. Common Pipeline Governance Settings -->
             <div style="background: var(--bg-surface-2); padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); margin-bottom: 18px;">
                 <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">

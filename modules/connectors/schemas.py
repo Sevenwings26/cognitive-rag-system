@@ -122,8 +122,9 @@ class SharePointConfig(BaseModel):
     tenant_id: str = Field(description="Azure AD Tenant ID")
     client_id: str = Field(description="Azure AD Application (Client) ID")
     client_secret: str = Field(description="Azure AD Client Secret")
-    site_url: str = Field(description="SharePoint Site URL")
-    folder_path: str = Field(default="/Shared Documents", description="Document Library Folder path")
+    site_url: Optional[str] = Field(default=None, description="SharePoint Site URL or Site ID")
+    site_id: Optional[str] = Field(default=None, description="SharePoint Site ID (e.g. domain,site-guid,web-guid)")
+    folder_path: str = Field(default="/Shared Documents", description="Document Library Folder path (blank or /Shared Documents for all documents)")
 
 # --- 3. Wikis & Productivity Configs ---
 
