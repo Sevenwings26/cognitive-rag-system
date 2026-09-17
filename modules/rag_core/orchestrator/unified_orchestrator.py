@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from core.config import settings
+from core.telemetry import record_backend_route, BackendRoute
 from modules.auth.domain.tokens import TokenData
 from modules.auth.domain.models import UserRole, Organization, Department
 from modules.governance.domain.models import AssistantPersona, PromptTemplate, EnterpriseDocument, IngestionJob
@@ -200,6 +201,16 @@ class UnifiedRAGOrchestrator:
 
         # 6. Post-Turn State Harvesting & Working Memory Update
         answer, sources, is_grounded, confidence = response
+
+        # Record authoritative APM telemetry route
+        _route_map = {
+            "conversational": BackendRoute.GENERAL,
+            "sql": BackendRoute.SQL,
+            "session": BackendRoute.ATTACHMENTS,
+            "enterprise": BackendRoute.RAG,
+        }
+        record_backend_route(_route_map.get(strategy_used, BackendRoute.RAG))
+
         if strategy_used == "sql" and sources:
             first_src = sources[0]
             extra_meta["rows"] = first_src.get("rows", [])

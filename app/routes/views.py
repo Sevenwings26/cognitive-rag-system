@@ -29,6 +29,10 @@ def render_register(request: Request):
 def render_dashboard(request: Request):
     return templates.TemplateResponse('enterprise_dashboard.html', {"request": request})
 
+@router.get("/enterprise/observatory", response_class=HTMLResponse)
+def render_observatory(request: Request):
+    return templates.TemplateResponse('observatory.html', {"request": request})
+
 @router.get("/", response_class=HTMLResponse)
 def render_main_workspace(
     request: Request,

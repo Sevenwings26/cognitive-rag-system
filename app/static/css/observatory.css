@@ -1,0 +1,675 @@
+/**
+ * Enterprise Multi-Tenant RAG System
+ * Observatory APM & Hardware Capacity Planner Stylesheet
+ * static/css/observatory.css
+ */
+
+/* ==========================================================================
+   1. Control Bar, Range Pickers & Live Pulse Indicator
+   ========================================================================== */
+.obs-control-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.obs-ranges {
+    display: inline-flex;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 3px;
+    gap: 2px;
+}
+
+.obs-range-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.obs-range-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-hover);
+}
+
+.obs-range-btn.active {
+    background-color: var(--accent-primary);
+    color: var(--accent-primary-text);
+    font-weight: 600;
+}
+
+.obs-live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-success);
+    background-color: var(--color-success-bg);
+    border: 1px solid var(--color-success-border);
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+}
+
+.obs-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--color-success);
+    box-shadow: 0 0 8px var(--color-success);
+    animation: obsPulseDot 2s infinite ease-in-out;
+}
+
+@keyframes obsPulseDot {
+    0% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.85); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+/* Error Banner */
+.obs-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+    border-radius: var(--radius-md);
+    padding: 12px 18px;
+    margin-bottom: 24px;
+    color: var(--color-danger-text);
+    font-size: 13px;
+}
+
+.obs-banner-close {
+    background: transparent;
+    border: none;
+    color: var(--color-danger-text);
+    font-size: 18px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+/* ==========================================================================
+   2. KPI Metric Cards
+   ========================================================================== */
+.obs-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+}
+
+.obs-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.obs-card:hover {
+    border-color: var(--border-active);
+    transform: translateY(-1px);
+}
+
+.obs-card-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.obs-card-value {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--text-primary);
+    line-height: 1.2;
+    font-family: var(--font-sans);
+}
+
+.obs-card-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
+.text-accent { color: var(--accent-primary) !important; }
+.text-cyan { color: #06B6D4 !important; }
+.text-purple { color: #8B5CF6 !important; }
+.text-danger { color: var(--color-danger) !important; }
+.text-warning { color: var(--color-warning) !important; }
+.text-success { color: var(--color-success) !important; }
+
+/* ==========================================================================
+   3. Gauges & Panels Grid
+   ========================================================================== */
+.obs-gauges-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.obs-panel {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 20px 22px;
+    box-shadow: var(--shadow-sm);
+}
+
+.full-width-panel {
+    margin-bottom: 24px;
+}
+
+.obs-panel-title {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin: 0;
+}
+
+.obs-panel-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 4px 0 14px 0;
+}
+
+.obs-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.obs-gauge-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 0;
+}
+
+.obs-donut-svg {
+    width: 110px;
+    height: 110px;
+    transform: rotate(-90deg);
+}
+
+.obs-donut-bg {
+    fill: none;
+    stroke: var(--bg-hover);
+    stroke-width: 9;
+}
+
+.obs-donut-val {
+    fill: none;
+    stroke: #EAB308;
+    stroke-width: 9;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.6s ease;
+}
+
+.obs-donut-val.val-rag { stroke: #EAB308; }
+.obs-donut-val.val-cpu { stroke: #06B6D4; }
+.obs-donut-val.val-mem { stroke: #8B5CF6; }
+
+.obs-donut-text {
+    fill: var(--text-primary);
+    font-size: 18px;
+    font-weight: 700;
+    font-family: var(--font-sans);
+    text-anchor: middle;
+    transform: rotate(90deg);
+    transform-origin: 60px 60px;
+}
+
+.obs-donut-legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+}
+
+.dot-yellow { background-color: #EAB308; }
+.dot-blue { background-color: #3B82F6; }
+.dot-teal { background-color: #14B8A6; }
+.dot-cyan { background-color: #06B6D4; }
+.dot-purple { background-color: #8B5CF6; }
+
+.obs-gauge-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    font-family: var(--font-mono);
+}
+
+.obs-speedometer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 0;
+}
+
+.obs-speedo-val {
+    font-size: 38px;
+    font-weight: 800;
+    color: var(--color-success);
+    line-height: 1;
+}
+
+.obs-speedo-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* ==========================================================================
+   4. Time Series Charts Grid
+   ========================================================================== */
+.obs-charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.obs-chart-legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.obs-unit-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: 6px;
+}
+
+.obs-chart-canvas-wrap {
+    width: 100%;
+    height: 140px;
+    position: relative;
+}
+
+.obs-bar-chart-wrap {
+    width: 100%;
+    height: 125px;
+    position: relative;
+}
+
+/* ==========================================================================
+   5. Host Hardware Accelerator Inventory & Per-Service Bars
+   ========================================================================== */
+.obs-accelerator-inventory {
+    display: grid;
+    gap: 12px;
+}
+
+.obs-accelerator-card {
+    background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+}
+
+.obs-accelerator-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.obs-accelerator-heading strong {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.obs-accelerator-heading span {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.obs-memory-type {
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+}
+
+.obs-accelerator-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.obs-accelerator-facts > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.obs-accelerator-facts span {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.obs-accelerator-facts strong {
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.obs-accelerator-note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.obs-accelerator-empty {
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: 13px;
+    padding: 16px;
+}
+
+.obs-resource-section-header {
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 20px;
+    padding-top: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.obs-resource-section-header h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.obs-gpu-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 12px;
+}
+
+.obs-gpu-service-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.service-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.progress-track-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.progress-track-label {
+    width: 65px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.progress-track-label.label-alloc { color: #F97316; }
+.progress-track-label.label-used { color: #14B8A6; }
+
+.progress-bar-bg {
+    flex: 1;
+    height: 7px;
+    background-color: var(--bg-hover);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+}
+
+.fill-alloc { background-color: #F97316; }
+.fill-used { background-color: #14B8A6; }
+
+.progress-val-text {
+    width: 65px;
+    text-align: right;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   6. Model Capacity Planner (Autofit Panel)
+   ========================================================================== */
+.model-capacity-panel {
+    border-color: var(--border-active);
+}
+
+.capacity-estimate-notice {
+    background-color: var(--color-info-bg);
+    border: 1px solid var(--color-info-border);
+    border-radius: var(--radius-md);
+    color: var(--color-info-text);
+    font-size: 13px;
+    margin-bottom: 18px;
+    padding: 12px 16px;
+}
+
+.form-row-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.form-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.form-select {
+    padding: 8px 12px;
+    font-size: 13px;
+    background-color: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    outline: none;
+    transition: border-color var(--transition-fast);
+}
+
+.form-select:focus {
+    border-color: var(--border-active);
+}
+
+.autofit-result-box {
+    margin-top: 24px;
+    padding: 22px;
+    background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+}
+
+.autofit-result-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.autofit-badge {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.05em;
+}
+
+.badge-fits {
+    background-color: var(--color-success-bg);
+    color: var(--color-success);
+    border: 1px solid var(--color-success-border);
+}
+
+.badge-quant {
+    background-color: var(--color-warning-bg);
+    color: var(--color-warning);
+    border: 1px solid var(--color-warning-border);
+}
+
+.badge-oom {
+    background-color: var(--color-danger-bg);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger-border);
+}
+
+.autofit-model-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.autofit-budget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.budget-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+}
+
+.budget-card.card-total {
+    border-color: var(--border-active);
+    background-color: var(--bg-subtle);
+}
+
+.budget-card.card-headroom {
+    border-color: var(--color-success-border);
+    background-color: var(--color-success-bg);
+}
+
+.budget-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.budget-val {
+    font-size: 18px;
+    font-weight: 800;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.autofit-advice-box {
+    background-color: var(--bg-surface);
+    border-left: 3px solid var(--accent-primary);
+    padding: 12px 16px;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+.autofit-prerequisites-box {
+    background-color: var(--color-warning-bg);
+    border: 1px solid var(--color-warning-border);
+    border-radius: var(--radius-md);
+    color: var(--color-warning-text);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+}
+
+.autofit-prerequisites-box ul {
+    margin: 6px 0 0 16px;
+    font-size: 12px;
+}
+
+.autofit-cmd-box {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.autofit-cmd-box pre {
+    margin-top: 6px;
+    background-color: #090D16;
+    color: #F8FAFC;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}

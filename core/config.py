@@ -47,6 +47,19 @@ try:
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
         STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
 
+        # Observatory APM & Hardware Telemetry Settings
+        OBSERVATORY_ENABLED: bool = os.getenv("OBSERVATORY_ENABLED", "true").lower() in ("true", "1", "yes")
+        OBSERVATORY_SAMPLE_INTERVAL_SECONDS: float = float(os.getenv("OBSERVATORY_SAMPLE_INTERVAL_SECONDS", "5.0"))
+        OBSERVATORY_REDIS_PREFIX: str = os.getenv("OBSERVATORY_REDIS_PREFIX", "rag:observatory")
+        OBSERVATORY_METRICS_SCRAPE_TOKEN: str = os.getenv("OBSERVATORY_METRICS_SCRAPE_TOKEN", "")
+        INFERENCE_ENGINE: str = os.getenv("INFERENCE_ENGINE", "ollama")
+
+        observatory_enabled: bool = True
+        observatory_sample_interval_seconds: float = 5.0
+        observatory_redis_prefix: str = "rag:observatory"
+        observatory_concurrency_lease_seconds: float = 30.0
+        inference_engine: str = "ollama"
+
         DEFAULT_SCORE_THRESHOLD: float = 0.35
         DEFAULT_TOP_K: int = 3
         DEFAULT_CANDIDATE_LIMIT: int = 15
@@ -102,6 +115,19 @@ except ImportError:
 
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
         STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
+
+        # Observatory APM & Hardware Telemetry Settings
+        OBSERVATORY_ENABLED: bool = os.getenv("OBSERVATORY_ENABLED", "true").lower() in ("true", "1", "yes")
+        OBSERVATORY_SAMPLE_INTERVAL_SECONDS: float = float(os.getenv("OBSERVATORY_SAMPLE_INTERVAL_SECONDS", "5.0"))
+        OBSERVATORY_REDIS_PREFIX: str = os.getenv("OBSERVATORY_REDIS_PREFIX", "rag:observatory")
+        OBSERVATORY_METRICS_SCRAPE_TOKEN: str = os.getenv("OBSERVATORY_METRICS_SCRAPE_TOKEN", "")
+        INFERENCE_ENGINE: str = os.getenv("INFERENCE_ENGINE", "ollama")
+
+        observatory_enabled: bool = True
+        observatory_sample_interval_seconds: float = 5.0
+        observatory_redis_prefix: str = "rag:observatory"
+        observatory_concurrency_lease_seconds: float = 30.0
+        inference_engine: str = "ollama"
 
         DEFAULT_SCORE_THRESHOLD: float = 0.35
         DEFAULT_TOP_K: int = 3
