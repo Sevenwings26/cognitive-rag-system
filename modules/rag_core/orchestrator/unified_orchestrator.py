@@ -30,6 +30,12 @@ from modules.rag_core.orchestrator.strategies import (
     EnterpriseKnowledgeStrategy,
     DynamicSQLStrategy
 )
+from modules.rag_core.context import (
+    SessionWorkingMemory,
+    SessionContextManager,
+    QueryCondenser,
+    StateHarvester
+)
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
 
@@ -84,13 +90,25 @@ class UnifiedRAGOrchestrator:
                 if dept:
                     dept_name = dept.name
 
-        # 2. Strict Session Document Check (Fast Qdrant Payload Query)
+        # 2. Universal Working Memory & History Context
+        working_memory = SessionContextManager.get_memory(session_id)
+        history = SessionContextManager.get_recent_history(db, session_id, current_query=query)
+
+        # 3. Anaphora Resolution & Query Condensation
+        condensed_query = QueryCondenser.condense(
+            query=query,
+            history=history,
+            memory=working_memory,
+            llm_service=self.llm
+        )
+
+        # 4. Strict Session Document Check (Fast Qdrant Payload Query)
         if session_id:
             has_session_documents = self.session_strategy.has_session_documents(user_context.org_id, session_id)
 
-        # 3. Analyze Query Intent & Plan Execution
+        # 5. Analyze Query Intent & Plan Execution on Disambiguated Query
         plan = QueryPlanner.analyze_and_plan(
-            query=query,
+            query=condensed_query,
             user_context=user_context,
             has_session_documents=has_session_documents,
             mode=mode
@@ -100,14 +118,20 @@ class UnifiedRAGOrchestrator:
             "org_name": org_name,
             "dept_name": dept_name,
             "scope": scope,
-            "intent_category": plan.intent_category
+            "intent_category": plan.intent_category,
+            "working_memory": working_memory,
+            "raw_query": query
         }
+
+        response = None
+        strategy_used = "enterprise"
+        extra_meta = {}
 
         # --- ROUTE A: Conversational / General Knowledge ---
         if plan.is_conversational_only:
             logger.info(f"Query routed to ConversationalStrategy (intent: {plan.intent_category}).")
-            return self.conversational_strategy.execute(
-                query=query,
+            response = self.conversational_strategy.execute(
+                query=condensed_query,
                 user_context=user_context,
                 db=db,
                 session_id=session_id,
@@ -118,12 +142,13 @@ class UnifiedRAGOrchestrator:
                 mode=mode,
                 **strategy_kwargs
             )
+            strategy_used = "conversational"
 
         # --- ROUTE B: Dynamic Text-to-SQL for Structured Database Inquiries ---
-        if plan.is_structured_sql and db:
+        elif plan.is_structured_sql and db:
             logger.info(f"Query routed to DynamicSQLStrategy (intent: {plan.intent_category}).")
             sql_response = self.sql_strategy.execute(
-                query=query,
+                query=condensed_query,
                 user_context=user_context,
                 db=db,
                 session_id=session_id,
@@ -135,38 +160,67 @@ class UnifiedRAGOrchestrator:
                 **strategy_kwargs
             )
             if sql_response is not None:
-                return sql_response
-            logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
+                response = sql_response
+                strategy_used = "sql"
+            else:
+                logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
 
         # --- ROUTE C: Scoped In-Chat Documents vs Enterprise Knowledge Base ---
-        if scope == "session" or (has_session_documents and scope != "enterprise"):
-            logger.info(f"Query routed to SessionDocumentStrategy for session '{session_id}'.")
-            return self.session_strategy.execute(
-                query=query,
-                user_context=user_context,
-                db=db,
-                session_id=session_id,
-                persona_id=persona_id,
-                template_id=template_id,
-                top_k=top_k,
-                score_threshold=score_threshold,
-                mode=mode,
-                **strategy_kwargs
-            )
+        if response is None:
+            if scope == "session" or (has_session_documents and scope != "enterprise"):
+                logger.info(f"Query routed to SessionDocumentStrategy for session '{session_id}'.")
+                response = self.session_strategy.execute(
+                    query=condensed_query,
+                    user_context=user_context,
+                    db=db,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    template_id=template_id,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    mode=mode,
+                    **strategy_kwargs
+                )
+                strategy_used = "session"
+            else:
+                logger.info("Query routed to EnterpriseKnowledgeStrategy.")
+                response = self.enterprise_strategy.execute(
+                    query=condensed_query,
+                    user_context=user_context,
+                    db=db,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    template_id=template_id,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    mode=mode,
+                    **strategy_kwargs
+                )
+                strategy_used = "enterprise"
 
-        logger.info("Query routed to EnterpriseKnowledgeStrategy.")
-        return self.enterprise_strategy.execute(
-            query=query,
-            user_context=user_context,
-            db=db,
-            session_id=session_id,
-            persona_id=persona_id,
-            template_id=template_id,
-            top_k=top_k,
-            score_threshold=score_threshold,
-            mode=mode,
-            **strategy_kwargs
+        # 6. Post-Turn State Harvesting & Working Memory Update
+        answer, sources, is_grounded, confidence = response
+        if strategy_used == "sql" and sources:
+            first_src = sources[0]
+            extra_meta["rows"] = first_src.get("rows", [])
+            extra_meta["database_name"] = first_src.get("database_name")
+
+        updated_memory = StateHarvester.harvest(
+            memory=working_memory,
+            strategy_name=strategy_used,
+            query=condensed_query,
+            answer=answer,
+            sources=sources,
+            extra_meta=extra_meta
         )
+        SessionContextManager.save_memory(updated_memory)
+
+        # Remove internal raw rows from public source objects so they don't bloat citation_metadata
+        if strategy_used == "sql" and sources:
+            for s in sources:
+                s.pop("rows", None)
+
+        return answer, sources, is_grounded, confidence
 
     def _try_execute_dynamic_sql(
         self,

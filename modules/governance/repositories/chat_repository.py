@@ -68,11 +68,19 @@ class ChatRepository:
         content: str,
         citation_metadata: Optional[Dict[str, Any]] = None
     ) -> ChatMessage:
+        safe_metadata = None
+        if citation_metadata is not None:
+            try:
+                import json
+                safe_metadata = json.loads(json.dumps(citation_metadata, default=str))
+            except Exception:
+                safe_metadata = {}
+
         msg = ChatMessage(
             session_id=session_id,
             role=role,
             content=content,
-            citation_metadata=citation_metadata
+            citation_metadata=safe_metadata
         )
         db.add(msg)
         db.commit()
