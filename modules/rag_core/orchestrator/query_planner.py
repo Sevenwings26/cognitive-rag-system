@@ -15,7 +15,10 @@ class QueryPlanner:
     ]
 
     STRUCTURED_SQL_KEYWORDS = [
-        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?)\b"
+        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?)\b",
+        r"\b(bvn|nin|ssn|tin|iban|cif|swift)\b",
+        r"\b(customer|customers|account|accounts|client|clients|beneficiar(?:y|ies)|transaction|transactions|transfer|transfers|loan|loans|repayment|repayments|collateral|balance|balances|merchant|merchants|pos|atm|branch|branches|employee|employees|kyc|aml|sanctions|fraud)\b",
+        r"^\s*(who is|find customer|lookup|verify|verification status|get details|check account|which customer|customer associated with)\b"
     ]
 
     DOCUMENT_RAG_KEYWORDS = [
@@ -38,8 +41,9 @@ class QueryPlanner:
         clean_query = query.strip()
         lower_query = clean_query.lower()
 
-        # Check for structured SQL intention
-        is_sql_intent = any(re.search(p, lower_query) for p in cls.STRUCTURED_SQL_KEYWORDS)
+        is_doc_intent = any(re.search(p, lower_query) for p in cls.DOCUMENT_RAG_KEYWORDS)
+        has_sql_aggregate = any(k in lower_query for k in ["how many", "count", "sum", "average", "total", "select", "rows", "table"])
+        is_sql_intent = any(re.search(p, lower_query) for p in cls.STRUCTURED_SQL_KEYWORDS) and (not is_doc_intent or has_sql_aggregate)
 
         # 1. Explicit Mode Override
         if mode == "general":
@@ -49,6 +53,14 @@ class QueryPlanner:
                 sub_queries=[clean_query],
                 intent_category="CONVERSATIONAL",
                 is_structured_sql=False
+            )
+        elif mode in ("sql", "database"):
+            return QueryPlan(
+                is_conversational_only=False,
+                target_scopes=["enterprise"],
+                sub_queries=[clean_query],
+                intent_category="STRUCTURED_SQL",
+                is_structured_sql=True
             )
         elif mode == "rag":
             return QueryPlan(
@@ -71,7 +83,19 @@ class QueryPlanner:
                     is_structured_sql=False
                 )
 
-        # B. Structured SQL / Tabular Queries
+        is_doc_intent = any(re.search(p, lower_query) for p in cls.DOCUMENT_RAG_KEYWORDS)
+
+        # B. Document-referencing inquiries (policies, handbooks, procedures, contracts) -> Prioritize RAG
+        if is_doc_intent and not any(k in lower_query for k in ["how many", "count", "sum", "average", "total", "select", "rows", "table"]):
+            return QueryPlan(
+                is_conversational_only=False,
+                target_scopes=["personal", "department", "enterprise"],
+                sub_queries=[clean_query],
+                intent_category="DOCUMENT_RAG",
+                is_structured_sql=False
+            )
+
+        # C. Structured SQL / Tabular Queries
         if is_sql_intent:
             return QueryPlan(
                 is_conversational_only=False,
@@ -81,16 +105,15 @@ class QueryPlanner:
                 is_structured_sql=True
             )
 
-        # C. Document-referencing keywords -> Prioritize RAG
-        for pattern in cls.DOCUMENT_RAG_KEYWORDS:
-            if re.search(pattern, lower_query):
-                return QueryPlan(
-                    is_conversational_only=False,
-                    target_scopes=["personal", "department", "enterprise"],
-                    sub_queries=[clean_query],
-                    intent_category="DOCUMENT_RAG",
-                    is_structured_sql=False
-                )
+        # D. Document-referencing keywords fallback
+        if is_doc_intent:
+            return QueryPlan(
+                is_conversational_only=False,
+                target_scopes=["personal", "department", "enterprise"],
+                sub_queries=[clean_query],
+                intent_category="DOCUMENT_RAG",
+                is_structured_sql=False
+            )
 
         # D. If session has uploaded files attached -> Route to RAG
         if has_session_documents:

@@ -146,3 +146,8 @@ docker compose -f docker/docker-compose.yml ps
 # Stop stack
 docker compose -f docker/docker-compose.yml down
 ```
+
+```
+# To run a script inside docker
+docker exec wings_retrival_ai python benchmarking/test_orchestrator_pipeline.py
+```

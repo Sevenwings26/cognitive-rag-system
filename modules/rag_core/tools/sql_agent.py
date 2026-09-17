@@ -28,7 +28,8 @@ class DynamicSQLAgent:
         "3. Match the specific SQL dialect syntax (e.g. PostgreSQL, MySQL, Oracle, MSSQL).\\n"
         "4. For date filtering or string matching, use dialect-standard functions (e.g. ILIKE for PostgreSQL/MySQL, LIKE for Oracle/MSSQL).\\n"
         "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle) unless performing an aggregation (COUNT, SUM, AVG).\\n"
-        "6. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary."
+        "6. For entity lookup questions (e.g. 'Who is the customer...', 'Find customer...', 'Check account...'), SELECT relevant descriptive attributes (such as first_name, last_name, customer_type, verification_status, name) alongside IDs so the inquiry can be fully answered.\\n"
+        "7. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary."
     )
 
     @classmethod
