@@ -27,9 +27,10 @@ class DynamicSQLAgent:
         "2. Use ONLY tables and columns provided in the Schema Context below.\\n"
         "3. Match the specific SQL dialect syntax (e.g. PostgreSQL, MySQL, Oracle, MSSQL).\\n"
         "4. For date filtering or string matching, use dialect-standard functions (e.g. ILIKE for PostgreSQL/MySQL, LIKE for Oracle/MSSQL).\\n"
-        "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle) unless performing an aggregation (COUNT, SUM, AVG).\\n"
+        "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle). When an inquiry asks for transaction activity or asks for BOTH a total/aggregate metric (e.g. total inflow, sum) AND an extreme (e.g. largest credit deposit), do NOT limit to 1 row; either compute the aggregates (e.g. SUM, MAX, COUNT) or SELECT all qualifying transactions up to LIMIT 50 so that both totals and specifics are available.\\n"
         "6. For entity lookup questions (e.g. 'Who is the customer...', 'Find customer...', 'Check account...'), SELECT relevant descriptive attributes (such as first_name, last_name, customer_type, verification_status, name) alongside IDs so the inquiry can be fully answered.\\n"
-        "7. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary."
+        "7. If [CONTEXT BINDINGS] are provided in the inquiry (e.g. customer_id = 1008, account_number = '0123456708'), use those explicit primary or foreign key values in your WHERE / JOIN clauses to locate the exact records.\\n"
+        "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary."
     )
 
     @classmethod
@@ -122,7 +123,19 @@ class DynamicSQLAgent:
                     timeout_ms=15000,
                     batch_size=100
                 )
-                rows = list(row_stream)
+                raw_rows = list(row_stream)
+                rows = []
+                for r in raw_rows:
+                    safe_row = {}
+                    for k, v in r.items():
+                        if hasattr(v, "isoformat"):
+                            safe_row[k] = v.isoformat()
+                        elif isinstance(v, (int, float, bool, str)) or v is None:
+                            safe_row[k] = v
+                        else:
+                            safe_row[k] = str(v)
+                    rows.append(safe_row)
+
                 columns = list(rows[0].keys()) if rows else []
 
                 logger.info(f"[SQL AGENT SUCCESS] Executed SQL on {canonical_dialect} ({len(rows)} rows returned)")

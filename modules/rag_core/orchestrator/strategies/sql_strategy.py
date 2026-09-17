@@ -31,14 +31,32 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         "MSSQL_DB", "MSSQL", "SQLSERVER"
     ]
 
-    # Semantic database mapping for banking / enterprise domains
+    # Semantic database mapping for banking / enterprise domains with primary & secondary weights
     DOMAIN_TABLE_KEYWORDS = {
-        "noros_customer_db": ["customer", "bvn", "kyc", "identity", "nin", "address", "segment"],
-        "noros_core_banking_db": ["account", "balance", "standing_order", "beneficiar"],
-        "noros_lending_db": ["loan", "lending", "repayment", "credit", "collateral", "installment", "amortization"],
-        "noros_payments_db": ["payment", "transfer", "bill", "card", "pos", "merchant"],
-        "noros_compliance_db": ["compliance", "aml", "sanction", "fraud", "suspicious"],
-        "noros_operations_db": ["operation", "branch", "atm", "employee", "relationship_manager"]
+        "noros_customer_db": {
+            "primary": ["bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is", "find customer", "look up customer", "address", "segment"],
+            "secondary": ["customer", "customers", "client", "person", "individual"]
+        },
+        "noros_core_banking_db": {
+            "primary": ["account", "accounts", "deposit", "deposits", "balance", "balances", "inflow", "inflows", "outflow", "outflows", "transaction", "transactions", "standing_order", "beneficiary", "beneficiaries", "ledger"],
+            "secondary": ["bank", "banking", "statement"]
+        },
+        "noros_lending_db": {
+            "primary": ["loan", "loans", "lending", "facility", "facilities", "credit", "repayment", "repayments", "installment", "installments", "collateral", "amortization", "borrower"],
+            "secondary": ["principal", "interest_rate"]
+        },
+        "noros_payments_db": {
+            "primary": ["transfer", "transfers", "payment", "payments", "bill", "card", "pos", "merchant", "merchants"],
+            "secondary": ["checkout", "terminal"]
+        },
+        "noros_compliance_db": {
+            "primary": ["compliance", "aml", "sanction", "sanctions", "fraud", "suspicious", "alert", "alerts"],
+            "secondary": ["screening", "flagged"]
+        },
+        "noros_operations_db": {
+            "primary": ["branch", "branches", "atm", "atms", "employee", "employees", "relationship_manager", "relationship_managers"],
+            "secondary": ["operation", "operations"]
+        }
     }
 
     def __init__(self, vector_store: VectorStoreService, llm_service: BaseLLMService):
@@ -53,7 +71,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
     ) -> Optional[IngestionJob]:
         """
         Dynamically determines which registered database contains the relevant tables.
-        Uses matched schema chunk comments/filenames first, then domain table keywords.
+        Uses scored domain keyword matching and schema chunk verification.
         """
         if not db_jobs:
             return None
@@ -62,22 +80,40 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
         job_map = {j.name.lower(): j for j in db_jobs}
         lower_query = query.lower()
+        scores = {db_name: 0 for db_name in job_map}
 
-        # 1. Inspect schema chunks for database name header (e.g. "-- Database: noros_customer_db")
-        for chunk in schema_chunks:
-            content = getattr(chunk, "payload", {}).get("content", "")
-            filename = getattr(chunk, "payload", {}).get("filename", "")
-            for db_name, job in job_map.items():
-                if db_name in content.lower() or db_name in filename.lower():
-                    logger.info(f"[DYNAMIC SQL] Matched target database '{job.name}' via schema chunk.")
-                    return job
+        # 1. Direct database exact name in query (+40 pts)
+        for db_name in job_map:
+            if db_name in lower_query:
+                scores[db_name] += 40
 
-        # 2. Match based on domain table keywords
-        for db_name, keywords in self.DOMAIN_TABLE_KEYWORDS.items():
-            if any(k in lower_query for k in keywords):
-                if db_name in job_map:
-                    logger.info(f"[DYNAMIC SQL] Matched target database '{db_name}' via query keyword matching.")
-                    return job_map[db_name]
+        # 2. Score based on domain keywords (primary = 25 pts, secondary = 2 pts)
+        for db_name, kw_groups in self.DOMAIN_TABLE_KEYWORDS.items():
+            if db_name not in scores:
+                continue
+            primaries = kw_groups.get("primary", [])
+            secondaries = kw_groups.get("secondary", [])
+            for p in primaries:
+                if re.search(r"\b" + re.escape(p) + r"\b", lower_query):
+                    scores[db_name] += 25
+            for s in secondaries:
+                if re.search(r"\b" + re.escape(s) + r"\b", lower_query):
+                    scores[db_name] += 2
+
+        # 3. Inspect schema chunks for database name header or table names (+5 pts)
+        for chunk in schema_chunks[:3]:
+            payload = getattr(chunk, "payload", {}) if hasattr(chunk, "payload") else (chunk.get("payload", {}) if isinstance(chunk, dict) else {})
+            content = payload.get("content", "").lower()
+            filename = payload.get("filename", "").lower()
+            for db_name in job_map:
+                if db_name in content or db_name in filename:
+                    scores[db_name] += 5
+
+
+        best_db, best_score = max(scores.items(), key=lambda x: x[1])
+        if best_score > 0:
+            logger.info(f"[DYNAMIC SQL] Matched target database '{best_db}' (score: {best_score}).")
+            return job_map[best_db]
 
         # 3. Default fallback to first job
         return db_jobs[0]
@@ -208,9 +244,17 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
             logger.info(f"[DYNAMIC SQL] Generating query for target DB='{job.name}' ({dialect})...")
 
+            # Injected Context Bindings from SessionWorkingMemory
+            working_memory = kwargs.get("working_memory")
+            query_with_bindings = query
+            if working_memory and getattr(working_memory, "active_entities", None):
+                bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items()) + "]"
+                query_with_bindings = query + bindings_str
+                logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
+
             # 3. Dynamic SQL Agent Generation & Read-Only Execution
             sql_result = DynamicSQLAgent.generate_and_execute_sql(
-                user_query=query,
+                user_query=query_with_bindings,
                 schema_context=schema_context,
                 dialect=dialect,
                 db_url=db_url,
@@ -251,7 +295,9 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     "sql_query": executed_sql,
                     "row_count": len(rows),
                     "relevance_score": 0.95,
-                    "preview": f"SQL: {executed_sql}"
+                    "preview": f"SQL: {executed_sql}",
+                    "rows": rows,
+                    "database_name": job.name
                 }]
 
                 AuditLogger.log(
