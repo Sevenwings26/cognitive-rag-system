@@ -1,5 +1,5 @@
 # app/schemas/chat.py
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 class ChatQueryPayload(BaseModel):
@@ -8,7 +8,7 @@ class ChatQueryPayload(BaseModel):
     """
     query: str = Field(..., description="The user's query text")
     session_id: Optional[str] = Field(None, description="Active conversational thread ID")
-    scope: Optional[List[str]] = Field(
+    scope: Optional[Union[str, List[str]]] = Field(
         default=["personal", "department", "enterprise"],
         description="Allowed search scopes: 'personal', 'department', 'enterprise'"
     )

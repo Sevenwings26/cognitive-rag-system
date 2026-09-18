@@ -20,7 +20,8 @@ class RAGSecurityFilterBuilder:
             return Filter(
                 must=[
                     tenant_condition,
-                    FieldCondition(key="session_id", match=MatchValue(value=session_id))
+                    FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                    FieldCondition(key="scope", match=MatchValue(value="session"))
                 ]
             )
 
@@ -31,8 +32,14 @@ class RAGSecurityFilterBuilder:
                 or_clauses.append(FieldCondition(key="session_id", match=MatchValue(value=session_id)))
             return Filter(must=[tenant_condition], should=or_clauses if or_clauses else None)
 
+        # Enterprise Knowledge Search: Strictly exclude in-chat session documents to guarantee zero bleed
+        enterprise_must_not = [FieldCondition(key="scope", match=MatchValue(value="session"))]
+
         if user_role == UserRole.SUPER_ADMIN:
-            return Filter(must=[tenant_condition])
+            return Filter(
+                must=[tenant_condition],
+                must_not=enterprise_must_not
+            )
 
         # 1. Public Documents
         or_clauses.append(FieldCondition(key="access_level", match=MatchValue(value="PUBLIC")))
@@ -41,11 +48,7 @@ class RAGSecurityFilterBuilder:
         if user_id:
             or_clauses.append(FieldCondition(key="uploader_id", match=MatchValue(value=user_id)))
 
-        # 3. Session Documents (Only if session_id provided)
-        if session_id:
-            or_clauses.append(FieldCondition(key="session_id", match=MatchValue(value=session_id)))
-
-        # 4. Department Documents (Only if department_id provided)
+        # 3. Department Documents (Only if department_id provided)
         if department_id:
             dept_acl_allowed = ["DEPARTMENT"]
             if user_role == UserRole.DEPT_ADMIN:
@@ -59,7 +62,11 @@ class RAGSecurityFilterBuilder:
             )
             or_clauses.append(dept_clause)
 
-        return Filter(must=[tenant_condition], should=or_clauses if or_clauses else None)
+        return Filter(
+            must=[tenant_condition],
+            must_not=enterprise_must_not,
+            should=or_clauses if or_clauses else None
+        )
 
     # Class-level alias for convenient calling
     build = build_search_filter

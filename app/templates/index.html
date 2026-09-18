@@ -805,7 +805,7 @@
         const statusBox = document.getElementById("upload-status");
         const statusText = document.getElementById("upload-status-text");
         statusBox.style.display = "inline-flex";
-        statusText.textContent = `Indexing "${file.name}" into vector memory...`;
+        statusText.textContent = `Uploading "${file.name}"...`;
 
         try {
             const data = await fetchAPI("/chat/upload", {
@@ -815,17 +815,33 @@
 
             if (data.session_id) {
                 promoteSessionIfNeeded(data.session_id, data.session_title);
+                sessionId = data.session_id;
             }
             appendFilePill(file.name, data.document_id);
             
             if (data.document_id) {
-                try {
-                    const statusRes = await fetchAPI(`/documents/${data.document_id}/status`);
-                    const chunkCount = statusRes?.chunk_count || 0;
-                    Toast.success("Document Indexed", `"${file.name}" indexed successfully into vector memory (${chunkCount} chunks).`);
-                } catch (e) {
-                    Toast.success("Document Indexed", `"${file.name}" is now accessible for grounded queries.`);
+                statusText.textContent = `Indexing "${file.name}" into vector memory...`;
+                let chunkCount = 0;
+                let pollAttempts = 0;
+                const maxPolls = 15;
+                while (pollAttempts < maxPolls) {
+                    try {
+                        const statusRes = await fetchAPI(`/documents/${data.document_id}/status`);
+                        if (statusRes && statusRes.status === "INDEXED") {
+                            chunkCount = statusRes.chunk_count || 0;
+                            break;
+                        }
+                        if (statusRes && statusRes.status === "FAILED") {
+                            throw new Error(statusRes.error_message || "Ingestion task failed.");
+                        }
+                    } catch (e) {
+                        if (pollAttempts >= maxPolls - 1) break;
+                    }
+                    pollAttempts++;
+                    await new Promise(r => setTimeout(r, 1000));
                 }
+
+                Toast.success("Document Indexed", `"${file.name}" indexed successfully into vector memory (${chunkCount} chunks).`);
             } else {
                 Toast.success("Document Indexed", `"${file.name}" is now accessible for grounded queries.`);
             }

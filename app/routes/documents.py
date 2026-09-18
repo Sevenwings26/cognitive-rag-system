@@ -2,7 +2,7 @@
 import hashlib
 import base64
 from typing import Optional, List
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user, get_optional_user, resolve_effective_user, get_orchestrator, require_role
@@ -11,6 +11,7 @@ from modules.auth.domain.models import AccessLevel
 from modules.auth.repositories.user_repository import UserRepository
 from modules.governance.domain.models import DocumentStatus
 from modules.governance.repositories.document_repository import DocumentRepository
+from modules.governance.repositories.chat_repository import ChatRepository
 from modules.governance.services.audit_logger import AuditLogger
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
 from core.storage import StorageManager
@@ -22,6 +23,7 @@ router = APIRouter(tags=["Document Ingestion & Management"])
 @router.post("/enterprise/documents/upload", status_code=status.HTTP_202_ACCEPTED, response_model=DocumentUploadResponse)
 @router.post("/chat/upload", status_code=status.HTTP_202_ACCEPTED, response_model=DocumentUploadResponse)
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
     access_level: AccessLevel = Form(AccessLevel.DEPARTMENT),
@@ -40,6 +42,26 @@ async def upload_document(
 
     if access_level == AccessLevel.CONFIDENTIAL and current_user.role == "MEMBER":
         raise HTTPException(status_code=403, detail="Members cannot upload Confidential documents")
+
+    # Session Binding & Auto-Provisioning
+    is_chat_upload = request.url.path.endswith("/chat/upload") or bool(session_id and session_id.strip())
+    session_title = None
+
+    if is_chat_upload:
+        clean_session_id = session_id.strip() if (session_id and session_id.strip()) else None
+        clean_title = f"Doc: {file.filename[:25]}"
+        session = ChatRepository.get_or_create_session(
+            db=db,
+            session_id=clean_session_id,
+            org_id=current_user.org_id,
+            department_id=dept_id if dept_id else None,
+            user_id=current_user.user_id if current_user.user_id else None,
+            title=clean_title
+        )
+        session_id = session.id
+        session_title = session.title
+    else:
+        session_id = None
 
     content = await file.read()
     file_hash = hashlib.sha256(content).hexdigest()
@@ -101,7 +123,7 @@ async def upload_document(
         action="DOCUMENT_UPLOAD_QUEUED",
         resource_type="DOCUMENT",
         resource_id=doc_record.id,
-        details={"filename": file.filename, "task_id": task_id}
+        details={"filename": file.filename, "task_id": task_id, "session_id": session_id}
     )
 
     return DocumentUploadResponse(
@@ -109,6 +131,7 @@ async def upload_document(
         message=f"Document '{file.filename}' queued for background ingestion",
         document_id=doc_record.id,
         session_id=session_id,
+        session_title=session_title,
         task_id=task_id
     )
 

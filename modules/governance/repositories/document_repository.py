@@ -23,8 +23,8 @@ class DocumentRepository:
     ) -> EnterpriseDocument:
         doc = EnterpriseDocument(
             org_id=org_id,
-            department_id=department_id,
-            uploader_id=uploader_id,
+            department_id=department_id if department_id else None,
+            uploader_id=uploader_id if uploader_id else None,
             filename=filename,
             file_hash=file_hash,
             file_size_bytes=file_size_bytes,

@@ -38,7 +38,8 @@ class SessionDocumentStrategy(BaseRetrievalStrategy):
             session_filter = Filter(
                 must=[
                     FieldCondition(key="org_id", match=MatchValue(value=org_id)),
-                    FieldCondition(key="session_id", match=MatchValue(value=session_id))
+                    FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                    FieldCondition(key="scope", match=MatchValue(value="session"))
                 ]
             )
             count_res = self.vector_store.client.count(
@@ -59,7 +60,7 @@ class SessionDocumentStrategy(BaseRetrievalStrategy):
         persona_id: Optional[str] = None,
         template_id: Optional[str] = None,
         top_k: int = 5,
-        score_threshold: float = 0.30,
+        score_threshold: float = 0.20,
         mode: str = "rag",
         **kwargs
     ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
@@ -76,7 +77,8 @@ class SessionDocumentStrategy(BaseRetrievalStrategy):
         strict_session_filter = Filter(
             must=[
                 FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id)),
-                FieldCondition(key="session_id", match=MatchValue(value=session_id))
+                FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                FieldCondition(key="scope", match=MatchValue(value="session"))
             ]
         )
 
@@ -88,14 +90,10 @@ class SessionDocumentStrategy(BaseRetrievalStrategy):
             score_threshold=score_threshold
         )
 
-        if not hits:
-            logger.info(f"[SESSION STRATEGY] No session chunks found for session='{session_id}' above {score_threshold}.")
-            return (
-                f"I could not find any relevant information matching '{query}' within the documents attached to this chat session.",
-                [],
-                False,
-                0.0
-            )
+        # 2. Check for Overview / Summarization intent or empty hits
+        is_overview_query = any(k in query.lower() for k in [
+            "about", "summar", "overview", "synopsis", "outline", "what is this", "what is the document", "describe", "explain the document", "what's in"
+        ])
 
         candidates = [
             {
@@ -111,6 +109,54 @@ class SessionDocumentStrategy(BaseRetrievalStrategy):
             }
             for h in hits
         ]
+
+        # If overview query or hits are empty, retrieve chunk_index == 0 for session document(s)
+        if is_overview_query or not candidates:
+            try:
+                intro_filter = Filter(
+                    must=[
+                        FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id)),
+                        FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                        FieldCondition(key="scope", match=MatchValue(value="session")),
+                        FieldCondition(key="chunk_index", match=MatchValue(value=0))
+                    ]
+                )
+                intro_points, _ = self.vector_store.client.scroll(
+                    collection_name=self.vector_store.collection_name,
+                    scroll_filter=intro_filter,
+                    limit=5,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                existing_chunk_ids = {c["chunk_id"] for c in candidates}
+                intro_candidates = []
+                for pt in intro_points:
+                    pt_id = str(pt.id)
+                    if pt_id not in existing_chunk_ids:
+                        intro_candidates.append({
+                            "chunk_id": pt_id,
+                            "content": pt.payload.get("content", ""),
+                            "filename": pt.payload.get("filename", "Uploaded File"),
+                            "document_id": pt.payload.get("document_id"),
+                            "department_id": pt.payload.get("department_id"),
+                            "access_level": pt.payload.get("access_level"),
+                            "source_type": pt.payload.get("source_type", "file"),
+                            "vector_score": 0.95,
+                            "rerank_score": 0.95
+                        })
+                # Prepend intro candidates so title / executive summary comes first
+                candidates = intro_candidates + candidates
+            except Exception as e:
+                logger.warning(f"Could not retrieve intro chunks for session '{session_id}': {e}")
+
+        if not candidates:
+            logger.info(f"[SESSION STRATEGY] No session chunks found for session='{session_id}' above {score_threshold}.")
+            return (
+                f"I could not find any relevant information matching '{query}' within the documents attached to this chat session.",
+                [],
+                False,
+                0.0
+            )
 
         context_block, raw_sources = self.grounding_validator.format_grounded_context(candidates)
         sources = self.grounding_validator.deduplicate_sources(raw_sources)

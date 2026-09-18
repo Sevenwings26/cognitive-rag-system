@@ -382,6 +382,9 @@ class UnifiedRAGOrchestrator:
             embeddings = [self.llm.get_embeddings(c) for c in chunks]
 
         # 2. Prepare Points for Qdrant and Entities for PostgreSQL
+        doc_scope = "session" if (session_id and session_id.strip()) else "enterprise"
+        bound_session_id = session_id.strip() if doc_scope == "session" else ""
+
         points = []
         db_chunk_records = []
 
@@ -393,7 +396,8 @@ class UnifiedRAGOrchestrator:
                 "department_id": department_id or "",
                 "uploader_id": uploader_id or "",
                 "access_level": access_level,
-                "session_id": session_id or "",
+                "session_id": bound_session_id,
+                "scope": doc_scope,
                 "filename": filename,
                 "chunk_index": idx,
                 "content": chunk,
@@ -423,7 +427,8 @@ class UnifiedRAGOrchestrator:
                         metadata_json={
                             "source_type": raw_doc.source_type,
                             "filename": filename,
-                            "session_id": session_id or ""
+                            "session_id": bound_session_id,
+                            "scope": doc_scope
                         }
                     )
                 )
