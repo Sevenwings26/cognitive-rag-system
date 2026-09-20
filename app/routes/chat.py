@@ -1,9 +1,12 @@
-# app/routes/chat.py
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status
+import json
+import logging
+from typing import Optional, List, Union
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_orchestrator, get_optional_user, resolve_effective_user
+from core.database import SessionLocal
 from modules.auth.domain.tokens import TokenData
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
 from modules.governance.repositories.chat_repository import ChatRepository
@@ -11,12 +14,14 @@ from app.schemas.chat import (
     ChatQueryPayload, ChatQueryResponse, SourceCitation, ChatSessionItem, ChatMessageItem
 )
 
+logger = logging.getLogger("chat_routes")
 router = APIRouter(tags=["Unified Conversational RAG"])
 
-@router.post("/chat/query", response_model=ChatQueryResponse)
-@router.post("/enterprise/chat/query", response_model=ChatQueryResponse)
+@router.post("/chat/query")
+@router.post("/enterprise/chat/query")
 def execute_chat_query(
     payload: ChatQueryPayload,
+    request: Request,
     db: Session = Depends(get_db),
     orchestrator: UnifiedRAGOrchestrator = Depends(get_orchestrator),
     auth_user: Optional[TokenData] = Depends(get_optional_user)
@@ -34,8 +39,82 @@ def execute_chat_query(
         title=session_title
     )
 
-    ChatRepository.add_message(db, session_id=session.id, role="user", content=payload.query)
+    active_session_id = session.id
+    active_session_title = session.title
 
+    ChatRepository.add_message(db, session_id=active_session_id, role="user", content=payload.query)
+
+    is_sse = payload.stream or "text/event-stream" in (request.headers.get("accept") or "")
+
+    if is_sse:
+        def sse_event_generator():
+            stream_db = SessionLocal()
+            accumulated_answer = ""
+            final_sources = []
+            is_grounded = True
+            confidence = 1.0
+
+            try:
+                for event_type, data in orchestrator.execute_unified_query_stream(
+                    query=payload.query,
+                    user_context=user_context,
+                    db=stream_db,
+                    session_id=active_session_id,
+                    scope=payload.scope,
+                    persona_id=payload.persona_id,
+                    template_id=payload.template_id,
+                    top_k=payload.top_k,
+                    score_threshold=payload.score_threshold,
+                    mode=payload.mode or "auto"
+                ):
+                    if event_type == "delta":
+                        accumulated_answer += data.get("content", "")
+                    elif event_type == "metadata":
+                        final_sources = data.get("sources", [])
+                        is_grounded = data.get("is_grounded", True)
+                        confidence = data.get("confidence", 1.0)
+                        data["session_title"] = active_session_title
+
+                    json_data = json.dumps(data)
+                    yield f"event: {event_type}\ndata: {json_data}\n\n"
+
+                # Persist assistant message to DB after stream completion
+                ChatRepository.add_message(
+                    db=stream_db,
+                    session_id=active_session_id,
+                    role="assistant",
+                    content=accumulated_answer,
+                    citation_metadata={
+                        "sources": final_sources,
+                        "is_grounded": is_grounded,
+                        "confidence": confidence
+                    }
+                )
+            except Exception as e:
+                logger.exception(f"Error in SSE event stream: {e}")
+                err_data = json.dumps({
+                    "step": "error",
+                    "stage": "error",
+                    "title": "Stream Execution Error",
+                    "details": str(e),
+                    "status": "failed"
+                })
+                yield f"event: status\ndata: {err_data}\n\n"
+            finally:
+                stream_db.close()
+
+        return StreamingResponse(
+
+            sse_event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # Synchronous Execution
     answer, sources, is_grounded, confidence = orchestrator.execute_unified_query(
         query=payload.query,
         user_context=user_context,
@@ -80,6 +159,7 @@ def execute_chat_query(
         is_grounded=is_grounded,
         grounding_confidence=confidence
     )
+
 
 @router.get("/chat/sessions", response_model=List[ChatSessionItem])
 def list_chat_sessions(

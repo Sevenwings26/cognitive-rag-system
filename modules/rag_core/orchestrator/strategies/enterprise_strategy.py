@@ -1,6 +1,6 @@
 # modules/rag_core/orchestrator/strategies/enterprise_strategy.py
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterator
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -40,7 +40,7 @@ class EnterpriseKnowledgeStrategy(BaseRetrievalStrategy):
         self.grounding_validator = grounding_validator or GroundingValidator()
         self.prompt_engine = prompt_engine or PromptEngine()
 
-    def execute(
+    def execute_stream(
         self,
         query: str,
         user_context: TokenData,
@@ -52,7 +52,7 @@ class EnterpriseKnowledgeStrategy(BaseRetrievalStrategy):
         score_threshold: float = 0.35,
         mode: str = "auto",
         **kwargs
-    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+    ) -> Iterator[Tuple[str, Any]]:
         org_name = kwargs.get("org_name", "Enterprise")
         dept_name = kwargs.get("dept_name", "General")
         scope = kwargs.get("scope")
@@ -86,6 +86,14 @@ class EnterpriseKnowledgeStrategy(BaseRetrievalStrategy):
         }
         system_instruction = self.prompt_engine.render_template(system_template, template_vars)
 
+        yield ("status", {
+            "step": "enterprise_retrieval",
+            "stage": "retrieval",
+            "title": "Querying Knowledge Base",
+            "details": f"Searching enterprise vector index with multi-tenant ACL filters for '{org_name}'...",
+            "status": "in_progress"
+        })
+
         # 2. Build Multi-Tenant Enterprise Security Filter
         user_role_enum = UserRole(user_context.role) if hasattr(UserRole, user_context.role) else UserRole.MEMBER
         security_filter = RAGSecurityFilterBuilder.build_search_filter(
@@ -108,25 +116,71 @@ class EnterpriseKnowledgeStrategy(BaseRetrievalStrategy):
         if not candidate_chunks:
             logger.info(f"[ENTERPRISE STRATEGY] Query '{query[:50]}' had no chunks above threshold {score_threshold}.")
             if mode == "rag":
-                return self.grounding_validator.get_out_of_context_response(query, org_name)
+                out_res = self.grounding_validator.get_out_of_context_response(query, org_name)
+                yield ("delta", {"content": out_res[0]})
+                yield ("result", out_res)
+                return
             else:
                 fallback_instruction = (
                     f"You are an AI assistant for {org_name}. "
                     "No internal company documents matched this specific inquiry. "
                     "Answer the user query accurately and helpfully using your general knowledge."
                 )
-                answer = self.llm.generate_text(
-                    query,
-                    system_instruction=fallback_instruction,
-                    temperature=0.6
-                )
-                return answer, [], False, 0.0
+                yield ("status", {
+                    "step": "enterprise_retrieval",
+                    "stage": "retrieval",
+                    "title": "No Internal Matches",
+                    "details": "Falling back to general domain knowledge synthesis...",
+                    "status": "completed"
+                })
+                answer = ""
+                if hasattr(self.llm, "stream_text"):
+                    for token in self.llm.stream_text(
+                        query,
+                        system_instruction=fallback_instruction,
+                        temperature=0.6
+                    ):
+                        answer += token
+                        yield ("delta", {"content": token})
+                else:
+                    answer = self.llm.generate_text(
+                        query,
+                        system_instruction=fallback_instruction,
+                        temperature=0.6
+                    )
+                    yield ("delta", {"content": answer})
+                yield ("result", (answer, [], False, 0.0))
+                return
+
+        yield ("status", {
+            "step": "enterprise_retrieval",
+            "stage": "retrieval",
+            "title": "Knowledge Passages Retrieved",
+            "details": f"Retrieved {len(candidate_chunks)} candidate passages from enterprise index.",
+            "status": "completed"
+        })
+
+        yield ("status", {
+            "step": "enterprise_reranking",
+            "stage": "retrieval",
+            "title": "Reranking Passages",
+            "details": f"Cross-encoder reranking top {top_k} passages for relevance...",
+            "status": "in_progress"
+        })
 
         reranked_chunks = self.reranker.rerank(
             query=query,
             candidate_chunks=candidate_chunks,
             top_n=top_k
         )
+
+        yield ("status", {
+            "step": "enterprise_reranking",
+            "stage": "retrieval",
+            "title": "Passages Reranked",
+            "details": f"Selected top {len(reranked_chunks)} reranked passages.",
+            "status": "completed"
+        })
 
         context_block, raw_sources = self.grounding_validator.format_grounded_context(reranked_chunks)
         sources = self.grounding_validator.deduplicate_sources(raw_sources)
@@ -156,11 +210,30 @@ Directives:
                 template_vars["context"] = context_block
                 user_prompt_str = self.prompt_engine.render_template(p_template.user_prompt_template, template_vars)
 
-        answer = self.llm.generate_text(
-            user_prompt_str,
-            system_instruction=system_instruction,
-            temperature=temperature
-        )
+        yield ("status", {
+            "step": "synthesis",
+            "stage": "synthesis",
+            "title": "Synthesizing Response",
+            "details": "Generating final response grounded in authorized enterprise context...",
+            "status": "in_progress"
+        })
+
+        answer = ""
+        if hasattr(self.llm, "stream_text"):
+            for token in self.llm.stream_text(
+                user_prompt_str,
+                system_instruction=system_instruction,
+                temperature=temperature
+            ):
+                answer += token
+                yield ("delta", {"content": token})
+        else:
+            answer = self.llm.generate_text(
+                user_prompt_str,
+                system_instruction=system_instruction,
+                temperature=temperature
+            )
+            yield ("delta", {"content": answer})
 
         is_grounded, confidence = self.grounding_validator.validate_grounding(answer, sources)
 
@@ -182,4 +255,44 @@ Directives:
                 }
             )
 
-        return answer, sources, is_grounded, confidence
+        yield ("status", {
+            "step": "synthesis",
+            "stage": "synthesis",
+            "title": "Response Generated",
+            "details": "Grounded answer synthesis completed.",
+            "status": "completed"
+        })
+
+        yield ("result", (answer, sources, is_grounded, confidence))
+
+    def execute(
+        self,
+        query: str,
+        user_context: TokenData,
+        db: Optional[Session] = None,
+        session_id: Optional[str] = None,
+        persona_id: Optional[str] = None,
+        template_id: Optional[str] = None,
+        top_k: int = 3,
+        score_threshold: float = 0.35,
+        mode: str = "auto",
+        **kwargs
+    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+        """Synchronous wrapper consuming execute_stream for backward compatibility."""
+        stream = self.execute_stream(
+            query=query,
+            user_context=user_context,
+            db=db,
+            session_id=session_id,
+            persona_id=persona_id,
+            template_id=template_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            mode=mode,
+            **kwargs
+        )
+        for item_type, data in stream:
+            if item_type == "result":
+                return data
+        return ("", [], False, 0.0)
+

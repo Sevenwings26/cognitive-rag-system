@@ -28,7 +28,13 @@ services:
         condition: service_started
       redis:
         condition: service_started
-    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4500/health').status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
 
   wings_ingestion_worker:
     build:
@@ -52,7 +58,7 @@ services:
         condition: service_started
       redis:
         condition: service_started
-    restart: always
+    restart: unless-stopped
 
 networks:
   default:

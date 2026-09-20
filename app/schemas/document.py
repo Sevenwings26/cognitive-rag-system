@@ -9,6 +9,7 @@ class DocumentUploadResponse(BaseModel):
     message: str
     document_id: Optional[str] = None
     session_id: Optional[str] = None
+    session_title: Optional[str] = None
     task_id: Optional[str] = None
 
 class DocumentItemResponse(BaseModel):

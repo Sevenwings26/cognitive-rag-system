@@ -81,3 +81,4 @@ psycopg
 pymysql>=1.2.0
 oracledb>=26.0.0
 pymssql>=2.4.1
+psutil>=5.9.0

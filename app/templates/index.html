@@ -255,6 +255,159 @@
         border-bottom-left-radius: var(--radius-sm);
     }
 
+    /* Thinking / Search Process Panel (LM Studio / Perplexity Style) */
+    .thinking-panel {
+        background-color: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        margin-bottom: 8px;
+        overflow: hidden;
+        transition: all 0.2s ease-in-out;
+        max-width: 100%;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    .thinking-panel.collapsed {
+        border-radius: var(--radius-full);
+        display: inline-flex;
+        margin-bottom: 8px;
+        box-shadow: none;
+        background-color: var(--bg-subtle);
+    }
+
+    .thinking-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 14px;
+        cursor: pointer;
+        user-select: none;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        transition: background-color 0.15s ease;
+    }
+
+    .thinking-header:hover {
+        background-color: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .thinking-panel.collapsed .thinking-header {
+        padding: 4px 12px;
+        gap: 6px;
+        font-size: 11.5px;
+        font-weight: 500;
+    }
+
+    .thinking-title-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .thinking-spinner {
+        width: 13px;
+        height: 13px;
+        border: 2px solid var(--border-subtle);
+        border-top-color: var(--accent-primary);
+        border-radius: 50%;
+        animation: thinking-spin 0.8s linear infinite;
+        flex-shrink: 0;
+    }
+
+    @keyframes thinking-spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .thinking-chevron {
+        font-size: 10px;
+        transition: transform 0.2s ease;
+        color: var(--text-muted);
+    }
+
+    .thinking-panel.collapsed .thinking-chevron {
+        transform: rotate(-90deg);
+    }
+
+    .thinking-steps {
+        border-top: 1px solid var(--border-subtle);
+        padding: 10px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background-color: var(--bg-canvas);
+        font-size: 12px;
+    }
+
+    .thinking-panel.collapsed .thinking-steps {
+        display: none;
+    }
+
+    .thinking-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        color: var(--text-secondary);
+        line-height: 1.4;
+    }
+
+    .thinking-step.in_progress {
+        color: var(--text-primary);
+        font-weight: 500;
+    }
+
+    .thinking-step.completed {
+        color: var(--text-secondary);
+    }
+
+    .thinking-step.failed {
+        color: var(--color-danger);
+    }
+
+    .step-icon {
+        margin-top: 2px;
+        font-size: 12px;
+        flex-shrink: 0;
+    }
+
+    .step-icon.check {
+        color: #10B981;
+    }
+
+    .step-icon.spinner {
+        width: 11px;
+        height: 11px;
+        border: 2px solid var(--border-subtle);
+        border-top-color: var(--accent-primary);
+        border-radius: 50%;
+        animation: thinking-spin 0.8s linear infinite;
+        margin-top: 3px;
+    }
+
+    .step-icon.cross {
+        color: var(--color-danger);
+    }
+
+    .step-content {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .step-title {
+        font-weight: 600;
+        font-size: 12px;
+    }
+
+    .step-details {
+        font-size: 11px;
+        color: var(--text-muted);
+        word-break: break-word;
+        margin-top: 2px;
+    }
+
+
     /* Citation Tags */
     .sources-container {
         margin-top: 12px;
@@ -805,7 +958,7 @@
         const statusBox = document.getElementById("upload-status");
         const statusText = document.getElementById("upload-status-text");
         statusBox.style.display = "inline-flex";
-        statusText.textContent = `Indexing "${file.name}" into vector memory...`;
+        statusText.textContent = `Uploading "${file.name}"...`;
 
         try {
             const data = await fetchAPI("/chat/upload", {
@@ -815,17 +968,33 @@
 
             if (data.session_id) {
                 promoteSessionIfNeeded(data.session_id, data.session_title);
+                sessionId = data.session_id;
             }
             appendFilePill(file.name, data.document_id);
             
             if (data.document_id) {
-                try {
-                    const statusRes = await fetchAPI(`/documents/${data.document_id}/status`);
-                    const chunkCount = statusRes?.chunk_count || 0;
-                    Toast.success("Document Indexed", `"${file.name}" indexed successfully into vector memory (${chunkCount} chunks).`);
-                } catch (e) {
-                    Toast.success("Document Indexed", `"${file.name}" is now accessible for grounded queries.`);
+                statusText.textContent = `Indexing "${file.name}" into vector memory...`;
+                let chunkCount = 0;
+                let pollAttempts = 0;
+                const maxPolls = 15;
+                while (pollAttempts < maxPolls) {
+                    try {
+                        const statusRes = await fetchAPI(`/documents/${data.document_id}/status`);
+                        if (statusRes && statusRes.status === "INDEXED") {
+                            chunkCount = statusRes.chunk_count || 0;
+                            break;
+                        }
+                        if (statusRes && statusRes.status === "FAILED") {
+                            throw new Error(statusRes.error_message || "Ingestion task failed.");
+                        }
+                    } catch (e) {
+                        if (pollAttempts >= maxPolls - 1) break;
+                    }
+                    pollAttempts++;
+                    await new Promise(r => setTimeout(r, 1000));
                 }
+
+                Toast.success("Document Indexed", `"${file.name}" indexed successfully into vector memory (${chunkCount} chunks).`);
             } else {
                 Toast.success("Document Indexed", `"${file.name}" is now accessible for grounded queries.`);
             }
@@ -895,7 +1064,7 @@
         }
     }
 
-    // --- Message Submission Handler ---
+    // --- Message Submission Handler (Real-Time SSE Streaming) ---
     async function handleSendMessage(event) {
         event.preventDefault();
         const inputField = document.getElementById("user-input");
@@ -907,31 +1076,207 @@
         // 1. Append User Message Bubble
         appendUserMessage(query);
 
-        // 2. Append Pulsating Skeleton Loading Bubble
-        const skeletonId = appendSkeletonBubble();
+        // 2. Create Assistant Message with live Thinking Panel & Streaming Response Bubble
+        const msgId = "assistant-msg-" + Date.now();
+        const startTime = Date.now();
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "message assistant";
+        msgDiv.id = msgId;
+
+        msgDiv.innerHTML = `
+            <div class="message-role-label">AI Assistant</div>
+            <div class="thinking-panel" id="thinking-${msgId}">
+                <div class="thinking-header" onclick="toggleThinking('${msgId}')">
+                    <div class="thinking-title-group">
+                        <div class="thinking-spinner" id="spinner-${msgId}"></div>
+                        <span id="thinking-label-${msgId}">Thinking & Retrieving...</span>
+                    </div>
+                    <span class="thinking-chevron" id="chevron-${msgId}">▼</span>
+                </div>
+                <div class="thinking-steps" id="steps-${msgId}"></div>
+            </div>
+            <div class="message-bubble markdown-body" id="bubble-${msgId}" style="display: none;"></div>
+            <div class="sources-container" id="sources-${msgId}" style="display: none;"></div>
+        `;
+
+        chatFeed.appendChild(msgDiv);
+        chatFeed.scrollTop = chatFeed.scrollHeight;
+
+        const thinkingPanel = document.getElementById(`thinking-${msgId}`);
+        const thinkingLabel = document.getElementById(`thinking-label-${msgId}`);
+        const thinkingSpinner = document.getElementById(`spinner-${msgId}`);
+        const stepsContainer = document.getElementById(`steps-${msgId}`);
+        const bubble = document.getElementById(`bubble-${msgId}`);
+        const sourcesContainer = document.getElementById(`sources-${msgId}`);
+
+        let accumulatedAnswer = "";
+        const stepsMap = {};
+        let isFirstToken = true;
 
         try {
-            const data = await fetchAPI("/chat/query", {
+            const token = (typeof Auth !== 'undefined' && Auth.getToken) ? Auth.getToken() : (localStorage.getItem("token") || "");
+            const headers = {
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream"
+            };
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
+            const response = await fetch("/chat/query", {
                 method: "POST",
-                body: { query: query, session_id: sessionId }
+                headers: headers,
+                body: JSON.stringify({
+                    query: query,
+                    session_id: sessionId,
+                    stream: true
+                })
             });
 
-            // Remove Skeleton Loader
-            const skeletonEl = document.getElementById(skeletonId);
-            if (skeletonEl) skeletonEl.remove();
-
-            if (data.status === "success") {
-                promoteSessionIfNeeded(data.session_id, data.session_title);
-                appendAssistantMessage(data.answer, data.sources, data.is_grounded, data.grounding_confidence);
-            } else {
-                appendAssistantMessage("⚠️ " + (data.message || "An unexpected error occurred."));
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `Server returned status ${response.status}`);
             }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop(); // Retain partial trailing chunk
+
+                let currentEvent = null;
+                for (let line of lines) {
+                    line = line.trim();
+                    if (!line) {
+                        currentEvent = null;
+                        continue;
+                    }
+                    if (line.startsWith("event:")) {
+                        currentEvent = line.substring(6).trim();
+                    } else if (line.startsWith("data:")) {
+                        const rawData = line.substring(5).trim();
+                        try {
+                            const data = JSON.parse(rawData);
+                            handleSSEEvent(currentEvent, data);
+                        } catch (err) {
+                            console.error("Error parsing SSE data payload:", err, rawData);
+                        }
+                    }
+                }
+            }
+
+            // Flush remaining trailing line if present
+            if (buffer.trim().startsWith("data:")) {
+                try {
+                    const data = JSON.parse(buffer.trim().substring(5).trim());
+                    handleSSEEvent("metadata", data);
+                } catch (e) {}
+            }
+
         } catch (err) {
-            const skeletonEl = document.getElementById(skeletonId);
-            if (skeletonEl) skeletonEl.remove();
-            appendAssistantMessage("⚠️ **Connection Error:** Unable to reach AI orchestration engine. " + err.message);
+            console.error("Streaming query failed:", err);
+            thinkingSpinner.style.display = "none";
+            thinkingLabel.textContent = "Execution Failed";
+            bubble.style.display = "block";
+            bubble.innerHTML = `⚠️ **Connection Error:** Unable to reach AI orchestration engine. ${escapeHTML(err.message)}`;
+        }
+
+        function handleSSEEvent(eventType, data) {
+            if (eventType === "status") {
+                const stepKey = data.step || data.stage;
+                thinkingLabel.textContent = data.title || "Processing...";
+
+                let stepEl = stepsMap[stepKey];
+                if (!stepEl) {
+                    stepEl = document.createElement("div");
+                    stepEl.className = `thinking-step ${data.status || 'in_progress'}`;
+                    stepsContainer.appendChild(stepEl);
+                    stepsMap[stepKey] = stepEl;
+                } else {
+                    stepEl.className = `thinking-step ${data.status || 'in_progress'}`;
+                }
+
+                let iconHtml = '<div class="step-icon spinner"></div>';
+                if (data.status === "completed") {
+                    iconHtml = '<span class="step-icon check">✓</span>';
+                } else if (data.status === "failed") {
+                    iconHtml = '<span class="step-icon cross">✗</span>';
+                }
+
+                stepEl.innerHTML = `
+                    ${iconHtml}
+                    <div class="step-content">
+                        <div class="step-title">${escapeHTML(data.title || '')}</div>
+                        ${data.details ? `<div class="step-details">${escapeHTML(data.details)}</div>` : ''}
+                    </div>
+                `;
+                chatFeed.scrollTop = chatFeed.scrollHeight;
+
+            } else if (eventType === "delta") {
+                if (isFirstToken) {
+                    isFirstToken = false;
+                    bubble.style.display = "block";
+                    // Auto-collapse thinking panel when response tokens start streaming
+                    collapseThinkingPanel();
+                }
+                accumulatedAnswer += data.content || "";
+                bubble.innerHTML = renderMarkdown(accumulatedAnswer);
+                chatFeed.scrollTop = chatFeed.scrollHeight;
+
+            } else if (eventType === "metadata") {
+                if (data.session_id) {
+                    promoteSessionIfNeeded(data.session_id, data.session_title);
+                    sessionId = data.session_id;
+                }
+
+                // Finalize thinking header pill with authoritative latency & strategy route
+                const elapsedSec = ((data.latency_ms || (Date.now() - startTime)) / 1000).toFixed(1);
+                const routeLabel = data.strategy_used ? `Route: ${data.strategy_used.toUpperCase()}` : 'Completed';
+                thinkingSpinner.style.display = "none";
+                thinkingLabel.textContent = `Thought for ${elapsedSec}s • ${routeLabel}`;
+
+                // Render sources if returned
+                if (data.sources && data.sources.length > 0) {
+                    sourcesContainer.style.display = "flex";
+                    let sourcesHtml = "";
+                    data.sources.forEach(src => {
+                        const previewText = src.preview ? escapeHTML(src.preview.substring(0, 120)) : '';
+                        const scoreText = src.relevance_score ? `${Math.round(src.relevance_score * 100)}%` : '';
+                        const chunkInfo = (src.chunk_count && src.chunk_count > 1) ? `<span class="source-chunk-count" style="opacity: 0.75; font-size: 10px; margin-left: 2px;">(${src.chunk_count} excerpts)</span>` : '';
+                        sourcesHtml += `
+                            <div class="source-tag" title="${previewText || src.filename}">
+                                <span>📄 ${escapeHTML(src.filename)}</span>
+                                ${chunkInfo}
+                                ${scoreText ? `<span class="source-score-badge">${scoreText}</span>` : ''}
+                            </div>
+                        `;
+                    });
+                    sourcesContainer.innerHTML = sourcesHtml;
+                }
+                chatFeed.scrollTop = chatFeed.scrollHeight;
+            }
+        }
+
+        function collapseThinkingPanel() {
+            const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+            thinkingSpinner.style.display = "none";
+            thinkingLabel.textContent = `Thought for ${elapsedSec}s`;
+            thinkingPanel.classList.add("collapsed");
         }
     }
+
+    function toggleThinking(msgId) {
+        const panel = document.getElementById(`thinking-${msgId}`);
+        if (panel) {
+            panel.classList.toggle("collapsed");
+        }
+    }
+    window.toggleThinking = toggleThinking;
+
 
     function appendUserMessage(text) {
         const msgDiv = document.createElement("div");

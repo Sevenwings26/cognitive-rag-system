@@ -3,7 +3,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 
-from modules.rag_core.context.models import SessionWorkingMemory
+from modules.rag_core.context.models import SessionWorkingMemory, EntityScope
 
 logger = logging.getLogger("state_harvester")
 
@@ -44,6 +44,10 @@ class StateHarvester:
         memory.last_strategy = strategy_name
         memory.turn_count += 1
 
+        if strategy_name == "system_meta":
+            memory.evict_for_topic_shift(EntityScope.SYSTEM_META)
+            return memory
+
         extra_meta = extra_meta or {}
 
         # 1. Harvest from SQL Structured Rows
@@ -52,14 +56,27 @@ class StateHarvester:
         if target_db:
             memory.last_target_database = target_db
 
+        is_multi_row = len(rows) > 1
+        if is_multi_row:
+            memory.scope = EntityScope.COLLECTION.value
+        elif len(rows) == 1:
+            memory.scope = EntityScope.INDIVIDUAL.value
+
         for row in rows[:10]:
             if not isinstance(row, dict):
                 continue
 
-            # Check entity IDs
-            for field in cls.KEY_ENTITY_FIELDS:
-                if field in row and row[field] is not None:
-                    memory.active_entities[field] = row[field]
+            # Check entity IDs - only bind singular customer/account ID if single row
+            if not is_multi_row:
+                for field in cls.KEY_ENTITY_FIELDS:
+                    if field in row and row[field] is not None:
+                        memory.active_entities[field] = row[field]
+                        if field == "customer_id":
+                            memory.primary_anchor_id = row[field]
+            else:
+                # In multi-row collection, preserve primary_anchor_id if present
+                if memory.primary_anchor_id and "customer_id" in row and row["customer_id"] == memory.primary_anchor_id:
+                    memory.active_entities["customer_id"] = memory.primary_anchor_id
 
             # Check person / corporate names
             first_name = row.get("first_name")
@@ -80,17 +97,21 @@ class StateHarvester:
 
         # 2. Extract Entities from Query via Regex
         # BVN regex (11 digits starting with 9 or standard 11-digit pattern)
-        bvn_match = re.search(r"\b(9\d{10}|\d{11})\b", query)
-        if bvn_match and "bvn" not in memory.active_entities:
-            memory.active_entities["bvn"] = bvn_match.group(1)
+        if memory.scope not in (EntityScope.AGGREGATE.value, EntityScope.SYSTEM_META.value):
+            bvn_match = re.search(r"\b(9\d{10}|\d{11})\b", query)
+            if bvn_match and "bvn" not in memory.active_entities:
+                memory.active_entities["bvn"] = bvn_match.group(1)
 
-        # Explicit customer_id pattern in query or answer
-        cid_match = re.search(r"(?:customer[_\s]?id|id)\s*[:=]\s*(\d+)", query + " " + answer, re.IGNORECASE)
-        if cid_match and "customer_id" not in memory.active_entities:
-            try:
-                memory.active_entities["customer_id"] = int(cid_match.group(1))
-            except ValueError:
-                pass
+            # Explicit customer_id pattern in query or answer (only for single row / individual inquiry)
+            if not is_multi_row:
+                cid_match = re.search(r"(?:customer[_\s]?id|id)\s*[:=]\s*(\d+)", query + " " + answer, re.IGNORECASE)
+                if cid_match and "customer_id" not in memory.active_entities:
+                    try:
+                        cid_val = int(cid_match.group(1))
+                        memory.active_entities["customer_id"] = cid_val
+                        memory.primary_anchor_id = cid_val
+                    except ValueError:
+                        pass
 
         # 3. Harvest Document Citations from RAG Sources
         for s in sources:

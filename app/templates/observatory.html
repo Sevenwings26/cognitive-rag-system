@@ -1,0 +1,510 @@
+<!-- app/templates/observatory.html -->
+{% extends "base.html" %}
+
+{% block title %}Live APM Telemetry & Hardware Capacity Observatory{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="/static/css/observatory.css">
+<style>
+    .dashboard-layout {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        background-color: var(--bg-canvas);
+    }
+
+    /* Top Navigation Header */
+    .dashboard-header {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background-color: var(--bg-surface);
+        border-bottom: 1px solid var(--border-subtle);
+        padding: 14px 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+    }
+
+    .brand-section {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .brand-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background-color: var(--accent-primary);
+        color: var(--accent-primary-text);
+        padding: 5px 12px;
+        border-radius: var(--radius-md);
+        font-weight: 700;
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .dashboard-container {
+        flex: 1;
+        max-width: 1440px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 28px 32px;
+    }
+
+    /* Metrics Grid */
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 16px;
+        margin-bottom: 28px;
+    }
+
+    .metric-card {
+        background-color: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        padding: 20px;
+        box-shadow: var(--shadow-sm);
+        transition: transform var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .metric-card:hover {
+        transform: translateY(-2px);
+        border-color: var(--text-muted);
+    }
+
+    .metric-title {
+        font-size: 11px;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+    }
+
+    .metric-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-top: 6px;
+        line-height: 1.1;
+    }
+
+    /* Tabs Navigation */
+    .tabs-nav {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--border-subtle);
+        margin-bottom: 24px;
+        overflow-x: auto;
+        padding-bottom: 1px;
+    }
+
+    .tab-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        padding: 12px 18px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: all var(--transition-fast);
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .tab-btn:hover {
+        color: var(--text-primary);
+        background-color: var(--bg-subtle);
+        border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    }
+
+    .tab-btn.active {
+        color: var(--text-primary);
+        border-bottom-color: var(--border-active);
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; animation: fadeIn var(--transition-fast); }
+
+    /* Empty state layout */
+    .empty-state {
+        text-align: center;
+        padding: 48px 24px;
+    }
+
+    .empty-state-icon {
+        font-size: 36px;
+        margin-bottom: 12px;
+        opacity: 0.8;
+    }
+
+    .empty-state-title {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+
+    .empty-state-desc {
+        font-size: 12px;
+        color: var(--text-secondary);
+        max-width: 360px;
+        margin: 0 auto 16px auto;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+</style>
+
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-layout">
+
+    <!-- Top Observatory Header -->
+    <header class="dashboard-header">
+        <div class="brand-section">
+            <div class="brand-pill">📡 Live APM Observatory</div>
+            <div>
+                <h1 style="font-size: 16px; font-weight: 600; line-height: 1.2;">System Telemetry & Capacity Planner</h1>
+                <p class="text-xs text-secondary">Real-Time Application Performance Monitoring & Hardware Sizer</p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <button type="button" class="btn btn-outline btn-sm" data-theme-toggle onclick="Theme.toggle()">
+                <span class="theme-toggle-icon">🌙</span>
+            </button>
+            <a href="/enterprise/dashboard" class="btn btn-outline btn-sm">🏢 Enterprise Admin</a>
+            <a href="/" class="btn btn-outline btn-sm">💬 Chat Workspace</a>
+            <button type="button" class="btn btn-outline btn-sm" id="obs-btn-sync">🔄 Sync Status</button>
+            <button type="button" class="btn btn-outline btn-sm" id="obs-btn-reset" title="Reset APM metrics buffer">⚠️ Reset APM</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="Auth.logout()">🚪 Sign Out</button>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="dashboard-container">
+
+        <!-- Controls Row: Time Ranges & Live Pulse Indicator -->
+        <div class="obs-control-bar">
+            <div class="obs-ranges" id="obs-ranges">
+                <button class="obs-range-btn" data-range="15m">15m</button>
+                <button class="obs-range-btn" data-range="1h">1h</button>
+                <button class="obs-range-btn" data-range="6h">6h</button>
+                <button class="obs-range-btn" data-range="24h">24h</button>
+                <button class="obs-range-btn" data-range="Today">Today</button>
+                <button class="obs-range-btn active" data-range="7d">7d</button>
+                <button class="obs-range-btn" data-range="All_time">All_time</button>
+            </div>
+
+            <div class="obs-live-badge" id="obs-live-indicator">
+                <span class="obs-live-dot"></span> LIVE updated <span id="obs-live-time">--:--:--</span>
+            </div>
+        </div>
+
+        <!-- Accessible Error Banner -->
+        <div class="obs-error-banner" id="obs-error-banner" role="alert" aria-live="assertive" hidden>
+            <div class="flex items-center gap-2">
+                <span>⚠️</span>
+                <span id="obs-error-message"></span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button id="obs-error-retry" type="button" class="btn btn-outline btn-sm">Retry</button>
+                <button id="obs-error-dismiss" type="button" class="obs-banner-close" aria-label="Dismiss alert">&times;</button>
+            </div>
+        </div>
+
+        <!-- Section 1: Executive APM KPIs -->
+        <div class="obs-kpi-grid">
+            <div class="obs-card">
+                <span class="obs-card-label">HOST UPTIME</span>
+                <div class="obs-card-value" id="obs-kpi-uptime">--</div>
+                <span class="obs-card-sub" id="obs-kpi-uptime-sub">host, live</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">TOTAL REQUESTS</span>
+                <div class="obs-card-value text-accent" id="obs-kpi-requests">0</div>
+                <span class="obs-card-sub" id="obs-kpi-requests-sub"><span id="obs-kpi-user-sub">0</span> user · <span id="obs-kpi-sys-sub">0</span> sys</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">CONCURRENCY</span>
+                <div class="obs-card-value text-purple" id="obs-kpi-concurrency">0</div>
+                <span class="obs-card-sub">user active, now</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">AVG RESP TIME (USER)</span>
+                <div class="obs-card-value text-cyan" id="obs-kpi-avg-resp">--</div>
+                <span class="obs-card-sub">customer SLA, in range</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">P95 RESP TIME (USER)</span>
+                <div class="obs-card-value text-cyan" id="obs-kpi-p95-resp">--</div>
+                <span class="obs-card-sub">customer SLA, in range</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">ERROR RATE (APP)</span>
+                <div class="obs-card-value text-danger" id="obs-kpi-app-error">--</div>
+                <span class="obs-card-sub">5xx / user requests</span>
+            </div>
+            <div class="obs-card">
+                <span class="obs-card-label">ERROR RATE (EXT)</span>
+                <div class="obs-card-value text-warning" id="obs-kpi-ext-error">--</div>
+                <span class="obs-card-sub">scanner & unmapped / total</span>
+            </div>
+        </div>
+
+        <!-- Section 2: Donut Gauges Row -->
+        <div class="obs-gauges-grid">
+            <!-- Backend Split Gauge -->
+            <div class="obs-panel">
+                <h3 class="obs-panel-title">BACKEND SPLIT (TOTAL)</h3>
+                <div class="obs-gauge-wrap">
+                    <svg class="obs-donut-svg" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="50" class="obs-donut-bg"></circle>
+                        <circle cx="60" cy="60" r="50" class="obs-donut-val val-rag" id="obs-donut-rag" stroke-dasharray="314.15" stroke-dashoffset="314.15"></circle>
+                        <text x="60" y="65" class="obs-donut-text" id="obs-donut-text">--</text>
+                    </svg>
+                    <div class="obs-donut-legend">
+                        <span class="legend-item"><span class="legend-dot dot-yellow"></span> RAG <strong id="obs-split-rag-val">--</strong></span>
+                        <span class="legend-item"><span class="legend-dot dot-blue"></span> SQL <strong id="obs-split-sql-val">--</strong></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Host CPU Gauge -->
+            <div class="obs-panel">
+                <h3 class="obs-panel-title">HOST CPU LOAD</h3>
+                <div class="obs-gauge-wrap">
+                    <svg class="obs-donut-svg" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="50" class="obs-donut-bg"></circle>
+                        <circle cx="60" cy="60" r="50" class="obs-donut-val val-cpu" id="obs-gauge-cpu" stroke-dasharray="314.15" stroke-dashoffset="314.15"></circle>
+                        <text x="60" y="65" class="obs-donut-text" id="obs-gauge-cpu-text">--</text>
+                    </svg>
+                    <span class="obs-gauge-sub" id="obs-gauge-cpu-sub">-- cores · load --</span>
+                </div>
+            </div>
+
+            <!-- Host Memory Gauge -->
+            <div class="obs-panel">
+                <h3 class="obs-panel-title">HOST RAM CONSUMPTION</h3>
+                <div class="obs-gauge-wrap">
+                    <svg class="obs-donut-svg" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="50" class="obs-donut-bg"></circle>
+                        <circle cx="60" cy="60" r="50" class="obs-donut-val val-mem" id="obs-gauge-mem" stroke-dasharray="314.15" stroke-dashoffset="314.15"></circle>
+                        <text x="60" y="65" class="obs-donut-text" id="obs-gauge-mem-text">--</text>
+                    </svg>
+                    <span class="obs-gauge-sub" id="obs-gauge-mem-sub">-- / -- GB</span>
+                </div>
+            </div>
+
+            <!-- Active Sessions Gauge -->
+            <div class="obs-panel">
+                <h3 class="obs-panel-title">ACTIVE TOKEN SESSIONS</h3>
+                <div class="obs-gauge-wrap">
+                    <div class="obs-speedometer">
+                        <span class="obs-speedo-val" id="obs-sessions-val">--</span>
+                        <span class="obs-speedo-sub">valid logins, live</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Time Series Charts -->
+        <div class="obs-charts-grid">
+            <div class="obs-panel">
+                <div class="obs-panel-header">
+                    <h3 class="obs-panel-title">Response Time — avg / p95</h3>
+                    <div class="obs-chart-legend">
+                        <span class="legend-item"><span class="legend-dot dot-teal"></span> avg</span>
+                        <span class="legend-item"><span class="legend-dot dot-cyan"></span> p95</span>
+                    </div>
+                </div>
+                <div class="obs-chart-canvas-wrap" id="chart-response-time"></div>
+            </div>
+
+            <div class="obs-panel">
+                <div class="obs-panel-header">
+                    <h3 class="obs-panel-title">In-Flight Concurrency</h3>
+                    <div class="obs-chart-legend">
+                        <span class="legend-item"><span class="legend-dot dot-purple"></span> active</span>
+                    </div>
+                </div>
+                <div class="obs-chart-canvas-wrap" id="chart-concurrency"></div>
+            </div>
+        </div>
+
+        <!-- Backend Split Over Time -->
+        <div class="obs-panel full-width-panel">
+            <div class="obs-panel-header">
+                <h3 class="obs-panel-title">Backend Query Split Over Time</h3>
+                <div class="obs-chart-legend">
+                    <span class="legend-item"><span class="legend-dot dot-yellow"></span> RAG</span>
+                    <span class="legend-item"><span class="legend-dot dot-blue"></span> SQL</span>
+                    <span class="obs-unit-label">queries / hr</span>
+                </div>
+            </div>
+            <div class="obs-bar-chart-wrap" id="chart-backend-split"></div>
+        </div>
+
+        <!-- Host Utilization: CPU %, GPU Memory % & GPU Compute % -->
+        <div class="obs-panel full-width-panel">
+            <div class="obs-panel-header">
+                <h3 class="obs-panel-title">Host CPU %, GPU Memory % & Compute %</h3>
+                <div class="obs-chart-legend">
+                    <span class="legend-item"><span class="legend-dot dot-teal"></span> Host CPU</span>
+                    <span class="legend-item"><span class="legend-dot dot-cyan"></span> GPU VRAM</span>
+                    <span class="legend-item"><span class="legend-dot dot-purple"></span> GPU Compute</span>
+                </div>
+            </div>
+            <div class="obs-chart-canvas-wrap" id="chart-host-utilization"></div>
+        </div>
+
+        <!-- Section 4: Host Accelerator Hardware Inventory -->
+        <div class="obs-panel full-width-panel">
+            <div class="obs-panel-header">
+                <div>
+                    <h3 class="obs-panel-title">Detected Accelerator Hardware</h3>
+                    <p class="obs-panel-desc">Physical hardware discovery and memory topology reported by host probes.</p>
+                </div>
+                <span class="badge badge-neutral" id="obs-accelerator-status">Loading…</span>
+            </div>
+            <div class="obs-accelerator-inventory" id="obs-accelerator-inventory">
+                <p class="text-muted">Probing host hardware…</p>
+            </div>
+
+            <div class="obs-resource-section-header">
+                <div>
+                    <h4>Per-Service Runtime Allocation</h4>
+                    <p class="obs-panel-desc">Resource attribution for independently monitored inference engines.</p>
+                </div>
+                <span class="badge badge-neutral" id="obs-gpu-service-tag">Not configured</span>
+            </div>
+            <div class="obs-gpu-bars" id="obs-gpu-bars-container"></div>
+        </div>
+
+        <!-- Section 5: Model Capacity Planner (Autofit Sizing Engine) -->
+        <div class="obs-panel full-width-panel model-capacity-panel">
+            <div class="obs-panel-header">
+                <div>
+                    <p class="obs-card-label" style="margin-bottom: 2px;">Capacity Estimate</p>
+                    <h3 class="obs-panel-title" style="font-size: 16px;">Model Capacity Planner</h3>
+                </div>
+                <span class="badge badge-info">AUTOFIT ENGINE</span>
+            </div>
+
+            <div class="capacity-estimate-notice" role="note">
+                <strong>Planning only.</strong> This calculation evaluates theoretical GPU/RAM bounds, KV-cache overhead, and tensor parallelism before downloading weights or launching testing.
+            </div>
+
+            <form class="obs-autofit-form" id="obs-autofit-form" onsubmit="return false;">
+                <div class="form-row-grid">
+                    <label class="form-group">
+                        <span class="form-label">Benchmark Model Architecture</span>
+                        <select id="autofit-model-select" class="form-select">
+                            <option value="meta-llama/Llama-3.2-3B-Instruct" selected>Llama 3.2 3B Instruct (Default)</option>
+                            <option value="meta-llama/Llama-3.2-1B-Instruct">Llama 3.2 1B Instruct</option>
+                            <option value="meta-llama/Meta-Llama-3.1-8B-Instruct">Llama 3.1 8B Instruct</option>
+                            <option value="meta-llama/Meta-Llama-3.1-70B-Instruct">Llama 3.1 70B Instruct</option>
+                            <option value="Qwen/Qwen2.5-7B-Instruct">Qwen 2.5 7B Instruct</option>
+                            <option value="Qwen/Qwen2.5-14B-Instruct">Qwen 2.5 14B Instruct</option>
+                            <option value="Qwen/Qwen2.5-32B-Instruct">Qwen 2.5 32B Instruct</option>
+                            <option value="Qwen/Qwen2.5-72B-Instruct">Qwen 2.5 72B Instruct</option>
+                            <option value="google/gemma-2-9b-it">Gemma 2 9B IT</option>
+                            <option value="google/gemma-2-27b-it">Gemma 2 27B IT</option>
+                            <option value="mistralai/Mistral-7B-Instruct-v0.3">Mistral 7B Instruct v0.3</option>
+                        </select>
+                    </label>
+
+                    <label class="form-group">
+                        <span class="form-label">Target Context Window (Tokens)</span>
+                        <select id="autofit-context-select" class="form-select">
+                            <option value="4096">4,096 (Lightweight)</option>
+                            <option value="8192" selected>8,192 (Standard Enterprise RAG)</option>
+                            <option value="16384">16,384 (Extended Context)</option>
+                            <option value="32768">32,768 (Deep Document Analysis)</option>
+                            <option value="65536">65,536 (Full Long Context)</option>
+                        </select>
+                    </label>
+
+                    <label class="form-group">
+                        <span class="form-label">Target Concurrency Capacity</span>
+                        <select id="autofit-concurrency-select" class="form-select">
+                            <option value="1">1 user (Sequential)</option>
+                            <option value="4" selected>4 users (Standard Team)</option>
+                            <option value="8">8 users (High Concurrency)</option>
+                            <option value="16">16 users (Heavy Load)</option>
+                        </select>
+                    </label>
+
+                    <div class="form-group" style="align-self: flex-end;">
+                        <button class="btn btn-primary" id="btn-eval-autofit" type="button">Estimate Capacity</button>
+                    </div>
+                </div>
+            </form>
+
+            <div class="autofit-result-box" id="autofit-result-box" hidden>
+                <div class="autofit-result-header">
+                    <span class="autofit-badge" id="autofit-status-badge">FITS</span>
+                    <span class="autofit-model-name" id="autofit-model-name">--</span>
+                </div>
+
+                <div class="autofit-budget-grid">
+                    <div class="budget-card">
+                        <span class="budget-label">Baseline FP16/BF16 Weights</span>
+                        <span class="budget-val" id="budget-weights-unquant">-- GB</span>
+                    </div>
+                    <div class="budget-card">
+                        <span class="budget-label" id="budget-selected-weights-label">Selected Weight Estimate</span>
+                        <span class="budget-val" id="budget-weights-quant">-- GB</span>
+                    </div>
+                    <div class="budget-card">
+                        <span class="budget-label">KV-Cache Budget</span>
+                        <span class="budget-val" id="budget-kv-cache">-- GB</span>
+                    </div>
+                    <div class="budget-card">
+                        <span class="budget-label" id="budget-reserve-label">Runtime / Activation Reserve</span>
+                        <span class="budget-val" id="budget-cuda-reserve">-- GB</span>
+                    </div>
+                    <div class="budget-card card-total">
+                        <span class="budget-label" id="budget-total-label">Estimated Total Memory Footprint</span>
+                        <span class="budget-val text-cyan" id="budget-total-req">-- GB</span>
+                    </div>
+                    <div class="budget-card card-headroom">
+                        <span class="budget-label">Estimated Remaining Headroom</span>
+                        <span class="budget-val text-success" id="budget-headroom">-- GB</span>
+                    </div>
+                </div>
+
+                <div class="autofit-advice-box" id="autofit-advice-box">
+                    <strong>Capacity Guidance:</strong>
+                    <p id="autofit-advice-text" style="margin-top: 4px;">--</p>
+                </div>
+
+                <div class="autofit-prerequisites-box" id="autofit-prerequisites-box" hidden>
+                    <strong>Validation Required Before Launch:</strong>
+                    <ul id="autofit-prerequisites-list"></ul>
+                </div>
+
+                <div class="autofit-cmd-box" id="autofit-cmd-box">
+                    <span id="autofit-cmd-label">Validated Launch Command:</span>
+                    <pre><code id="autofit-cmd-code">No validated launch command is available.</code></pre>
+                </div>
+            </div>
+        </div>
+
+    </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/observatory.js"></script>
+{% endblock %}

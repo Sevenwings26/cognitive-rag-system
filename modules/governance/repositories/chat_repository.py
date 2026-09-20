@@ -28,8 +28,8 @@ class ChatRepository:
         new_session = ChatSession(
             id=session_id or str(uuid.uuid4()),
             org_id=org_id,
-            department_id=department_id,
-            user_id=user_id,
+            department_id=department_id if department_id else None,
+            user_id=user_id if user_id else None,
             title=title
         )
         db.add(new_session)

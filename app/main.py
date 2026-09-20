@@ -11,7 +11,9 @@ from core.config import settings
 from core.database import Base, engine, SessionLocal
 import modules.auth.domain.models  # Registers auth tables
 import modules.governance.domain.models  # Registers governance tables
-from app.routes import auth, chat, documents, governance, jobs, audit, views, indexes
+from app.routes import auth, chat, documents, governance, jobs, audit, views, indexes, observatory
+from app.middleware.observatory import ObservatoryMiddleware
+from core.telemetry import bind_backend_route_recorder
 
 logger = logging.getLogger("app.bootstrap")
 
@@ -85,7 +87,29 @@ async def lifespan(app: FastAPI):
     except Exception as boot_err:
         logger.error(f"[DB INIT ERROR] Startup database initialization failed: {boot_err}")
 
+    # 4. Initialize Observatory Telemetry & Background Hardware Sampler
+    if getattr(settings, "OBSERVATORY_ENABLED", True):
+        try:
+            from modules.observatory.buffer import get_observatory_buffer
+            from modules.observatory.sampler import get_hardware_sampler
+
+            bind_backend_route_recorder(get_observatory_buffer().record_turn_route)
+            get_hardware_sampler().start()
+            logger.info("[OBSERVATORY] Telemetry buffer & background hardware sampler initialized.")
+        except Exception as obs_err:
+            logger.warning(f"[OBSERVATORY] Startup initialization notice: {obs_err}")
+
     yield
+
+    if getattr(settings, "OBSERVATORY_ENABLED", True):
+        try:
+            from modules.observatory.sampler import get_hardware_sampler
+
+            get_hardware_sampler().stop()
+            bind_backend_route_recorder(None)
+            logger.info("[OBSERVATORY] Background hardware sampler stopped.")
+        except Exception as obs_err:
+            logger.debug(f"[OBSERVATORY] Shutdown notice: {obs_err}")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -108,6 +132,7 @@ app.add_middleware(
     allow_headers=["*"],
     allow_methods=["*"],
 )
+app.add_middleware(ObservatoryMiddleware)
 
 # Register API Routers
 app.include_router(auth.router)
@@ -117,6 +142,7 @@ app.include_router(governance.router)
 app.include_router(jobs.router)
 app.include_router(audit.router)
 app.include_router(indexes.router)
+app.include_router(observatory.router)
 
 # Register UI View Routers
 app.include_router(views.router)

@@ -1,8 +1,9 @@
 # modules/rag_core/orchestrator/strategies/sql_strategy.py
 import re
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterator
 from sqlalchemy.orm import Session
+# pyrefly: ignore [missing-import]
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from core.crypto import decrypt_connection_config
@@ -31,10 +32,11 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         "MSSQL_DB", "MSSQL", "SQLSERVER"
     ]
 
+    # This is not a good desgin
     # Semantic database mapping for banking / enterprise domains with primary & secondary weights
     DOMAIN_TABLE_KEYWORDS = {
         "noros_customer_db": {
-            "primary": ["bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is", "find customer", "look up customer", "address", "segment"],
+            "primary": ["bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is", "find customer", "look up customer", "address", "segment", "organization", "organizations", "company", "companies", "employer", "employers", "industry", "industries", "sector", "sectors", "corporate", "serving", "clientele"],
             "secondary": ["customer", "customers", "client", "person", "individual"]
         },
         "noros_core_banking_db": {
@@ -190,7 +192,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             logger.warning(f"[DYNAMIC SQL] Dynamic schema reflection failed: {ref_err}")
             return "", []
 
-    def execute(
+    def execute_stream(
         self,
         query: str,
         user_context: TokenData,
@@ -202,9 +204,10 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         score_threshold: float = 0.35,
         mode: str = "auto",
         **kwargs
-    ) -> Optional[Tuple[str, List[Dict[str, Any]], bool, float]]:
+    ) -> Iterator[Tuple[str, Any]]:
         if not db:
-            return None
+            yield ("result", None)
+            return
 
         org_name = kwargs.get("org_name", "Enterprise")
 
@@ -216,10 +219,18 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
             if not db_jobs:
                 logger.info("[DYNAMIC SQL] No database connector jobs configured for org.")
-                return None
+                yield ("result", None)
+                return
 
             # 1. Resolve Target Database Connector
-            # Quick vector probe to discover relevant schema chunks
+            yield ("status", {
+                "step": "sql_target_resolution",
+                "stage": "sql",
+                "title": "Resolving Target Database",
+                "details": "Matching query against registered enterprise database connectors...",
+                "status": "in_progress"
+            })
+
             query_vector = self.llm.get_embeddings(query)
             probe_hits = self.vector_store.search_vectors(
                 query_vector=query_vector,
@@ -230,7 +241,15 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
             job = self._resolve_target_job(query, db_jobs, probe_hits)
             if not job:
-                return None
+                yield ("status", {
+                    "step": "sql_target_resolution",
+                    "stage": "sql",
+                    "title": "Target Database",
+                    "details": "No matching database connector found for query.",
+                    "status": "failed"
+                })
+                yield ("result", None)
+                return
 
             decrypted_config = decrypt_connection_config(job.connection_config)
             dialect = SQLSecurityGuard.canonical_dialect(job.source_type)
@@ -240,9 +259,23 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             schema_context, _ = self._get_schema_context(query, user_context, job, dialect, db_url, db=db)
             if not schema_context.strip():
                 logger.warning(f"[DYNAMIC SQL] No schema context available for target database '{job.name}'.")
-                return None
+                yield ("status", {
+                    "step": "sql_target_resolution",
+                    "stage": "sql",
+                    "title": "Target Database",
+                    "details": f"No schema DDLs available for {job.name}.",
+                    "status": "failed"
+                })
+                yield ("result", None)
+                return
 
-            logger.info(f"[DYNAMIC SQL] Generating query for target DB='{job.name}' ({dialect})...")
+            yield ("status", {
+                "step": "sql_target_resolution",
+                "stage": "sql",
+                "title": "Target Database Identified",
+                "details": f"Matched target database '{job.name}' ({dialect.upper()})",
+                "status": "completed"
+            })
 
             # Injected Context Bindings from SessionWorkingMemory
             working_memory = kwargs.get("working_memory")
@@ -253,6 +286,14 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
 
             # 3. Dynamic SQL Agent Generation & Read-Only Execution
+            yield ("status", {
+                "step": "sql_synthesis",
+                "stage": "sql",
+                "title": "Synthesizing SQL Query",
+                "details": f"Synthesizing dialect-tailored SQL query for {job.name} with AST safety guardrails...",
+                "status": "in_progress"
+            })
+
             sql_result = DynamicSQLAgent.generate_and_execute_sql(
                 user_query=query_with_bindings,
                 schema_context=schema_context,
@@ -265,6 +306,22 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 rows = sql_result.get("rows", [])
                 cols = sql_result.get("columns", [])
                 executed_sql = sql_result.get("sql", "")
+
+                yield ("status", {
+                    "step": "sql_synthesis",
+                    "stage": "sql",
+                    "title": "SQL Query Generated",
+                    "details": f"Generated SQL: {executed_sql}",
+                    "status": "completed"
+                })
+
+                yield ("status", {
+                    "step": "sql_execution",
+                    "stage": "sql",
+                    "title": "Executing SQL Query",
+                    "details": f"Executed sandboxed query against {job.name}. Retrieved {len(rows)} matching rows.",
+                    "status": "completed"
+                })
 
                 if rows:
                     md_table_lines = ["| " + " | ".join(cols) + " |", "| " + " | ".join(["---"] * len(cols)) + " |"]
@@ -282,11 +339,41 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     f"Provide a clear, direct, and professional answer to the user's inquiry based on this query result. "
                     f"State the exact customer name, identifier, or values retrieved."
                 )
-                answer = self.llm.generate_text(
-                    synthesis_prompt,
-                    system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
-                )
+
+                yield ("status", {
+                    "step": "synthesis",
+                    "stage": "synthesis",
+                    "title": "Generating Response",
+                    "details": "Generating final synthesized response from database records...",
+                    "status": "in_progress"
+                })
+
+                answer = ""
+                if hasattr(self.llm, "stream_text"):
+                    for token in self.llm.stream_text(
+                        synthesis_prompt,
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                    ):
+                        answer += token
+                        yield ("delta", {"content": token})
+                else:
+                    answer = self.llm.generate_text(
+                        synthesis_prompt,
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                    )
+                    yield ("delta", {"content": answer})
+
+                # Yield table summary markdown
+                yield ("delta", {"content": table_summary})
                 full_answer = f"{answer}\n{table_summary}"
+
+                yield ("status", {
+                    "step": "synthesis",
+                    "stage": "synthesis",
+                    "title": "Response Complete",
+                    "details": "Synthesis completed successfully.",
+                    "status": "completed"
+                })
 
                 sources = [{
                     "source_name": f"{job.name} ({dialect.upper()} Database)",
@@ -310,10 +397,48 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     details={"sql": executed_sql, "rows_returned": len(rows), "database": job.name}
                 )
 
-                return full_answer, sources, True, 0.95
+                yield ("result", (full_answer, sources, True, 0.95))
             else:
                 logger.warning(f"[DYNAMIC SQL] Execution failed: {sql_result.get('error')}. Falling back.")
-                return None
+                yield ("status", {
+                    "step": "sql_execution",
+                    "stage": "sql",
+                    "title": "SQL Execution Failed",
+                    "details": f"Query error: {sql_result.get('error')}. Falling back to document RAG.",
+                    "status": "failed"
+                })
+                yield ("result", None)
         except Exception as e:
             logger.warning(f"[DYNAMIC SQL] Error: {e}. Falling back.")
-            return None
+            yield ("result", None)
+
+    def execute(
+        self,
+        query: str,
+        user_context: TokenData,
+        db: Optional[Session] = None,
+        session_id: Optional[str] = None,
+        persona_id: Optional[str] = None,
+        template_id: Optional[str] = None,
+        top_k: int = 3,
+        score_threshold: float = 0.35,
+        mode: str = "auto",
+        **kwargs
+    ) -> Optional[Tuple[str, List[Dict[str, Any]], bool, float]]:
+        """Synchronous wrapper consuming execute_stream for backward compatibility."""
+        stream = self.execute_stream(
+            query=query,
+            user_context=user_context,
+            db=db,
+            session_id=session_id,
+            persona_id=persona_id,
+            template_id=template_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            mode=mode,
+            **kwargs
+        )
+        for item_type, data in stream:
+            if item_type == "result":
+                return data
+        return None
