@@ -67,6 +67,29 @@ class DatabaseSchemaReflector:
                     for c in table.columns
                 ]
 
+                # Dynamically sample distinct non-null values for text/categorical columns
+                column_samples = {}
+                try:
+                    from sqlalchemy import text
+                    with engine.connect() as conn:
+                        for c in table.columns:
+                            col_type_str = str(c.type).upper()
+                            if any(t in col_type_str for t in ("VARCHAR", "CHAR", "TEXT", "STRING")):
+                                safe_col = f'"{c.name}"' if canonical == "postgresql" else (f'[{c.name}]' if canonical == "mssql" else f'`{c.name}`')
+                                safe_tbl = f'"{short_name}"' if canonical == "postgresql" else (f'[{short_name}]' if canonical == "mssql" else f'`{short_name}`')
+                                if canonical == "mssql":
+                                    query = f"SELECT DISTINCT TOP 3 {safe_col} FROM {safe_tbl} WHERE {safe_col} IS NOT NULL"
+                                elif canonical == "oracle":
+                                    query = f"SELECT DISTINCT {safe_col} FROM {safe_tbl} WHERE {safe_col} IS NOT NULL AND ROWNUM <= 3"
+                                else:
+                                    query = f"SELECT DISTINCT {safe_col} FROM {safe_tbl} WHERE {safe_col} IS NOT NULL LIMIT 3"
+                                res = conn.execute(text(query)).fetchall()
+                                samples = [str(r[0]) for r in res if r[0] is not None]
+                                if samples:
+                                    column_samples[c.name] = samples
+                except Exception as sample_err:
+                    logger.debug(f"[SCHEMA REFLECTOR] Value sampling skipped for {short_name}: {sample_err}")
+
                 reflected_tables.append({
                     "table_name": short_name,
                     "full_table_name": table_name,
@@ -75,7 +98,8 @@ class DatabaseSchemaReflector:
                     "primary_keys": pks,
                     "foreign_keys": fks,
                     "columns": columns,
-                    "column_names": [c["name"] for c in columns]
+                    "column_names": [c["name"] for c in columns],
+                    "column_samples": column_samples
                 })
 
             logger.info(f"[SCHEMA REFLECTOR] Successfully reflected {len(reflected_tables)} tables for {canonical}")
@@ -104,11 +128,19 @@ class DatabaseSchemaReflector:
             pks = ", ".join(tbl["primary_keys"]) if tbl["primary_keys"] else "None"
             fks = ", ".join(tbl["foreign_keys"]) if tbl["foreign_keys"] else "None"
 
+            sample_notes = []
+            if tbl.get("column_samples"):
+                sample_notes.append("-- Sample Column Values (Distinct data observations):")
+                for col_name, samples in tbl["column_samples"].items():
+                    sample_notes.append(f"--   {col_name}: {samples}")
+            sample_str = "\n".join(sample_notes) + "\n\n" if sample_notes else ""
+
             structured_content = (
                 f"-- Database Schema DDL for Table: {table_name}\n"
                 f"-- Dialect: {dialect} | Database: {db_name}\n"
                 f"-- Primary Keys: {pks}\n"
                 f"-- Foreign Keys: {fks}\n\n"
+                f"{sample_str}"
                 f"{ddl_text}\n"
             )
 

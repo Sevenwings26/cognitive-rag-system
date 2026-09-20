@@ -4,7 +4,7 @@ Using the Provider Pattern (also known as the Strategy Pattern) to which between
 """
 import os
 from abc import ABC, abstractmethod
-from typing import Optional, List
+from typing import Optional, List, Iterator
 from google.genai import types
 from google import genai
 
@@ -22,6 +22,15 @@ class BaseLLMService(ABC):
         Generate text content from a prompt.
         """
         pass
+
+    def stream_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> Iterator[str]:
+        """
+        Stream text content incrementally from a prompt.
+        Default fallback yields the complete generated text in a single chunk.
+        """
+        text = self.generate_text(prompt, system_instruction=system_instruction, **kwargs)
+        if text:
+            yield text
 
     @abstractmethod
     def get_embeddings(self, text: str) -> List[float]:
@@ -52,6 +61,23 @@ class GeminiService(BaseLLMService):
             config=config
         )
         return response.text.strip()
+
+    def stream_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> Iterator[str]:
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=kwargs.get("temperature", 0.2),
+            max_output_tokens=kwargs.get("max_tokens", None)
+        )
+        try:
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model_name,
+                contents=prompt,
+                config=config
+            ):
+                if chunk.text:
+                    yield chunk.text
+        except Exception:
+            yield self.generate_text(prompt, system_instruction=system_instruction, **kwargs)
 
     def get_embeddings(self, text: str) -> List[float]:
         response = self.client.models.embed_content(
@@ -115,6 +141,26 @@ class OpenAICompatibleService(BaseLLMService):
             max_tokens=kwargs.get("max_tokens", None)
         )
         return response.choices[0].message.content.strip()
+
+    def stream_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> Iterator[str]:
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=kwargs.get("temperature", 0.2),
+                max_tokens=kwargs.get("max_tokens", None),
+                stream=True
+            )
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception:
+            yield self.generate_text(prompt, system_instruction=system_instruction, **kwargs)
 
     def get_embeddings(self, text: str) -> List[float]:
         # If you haven't configured an embedding model for your local setup yet,

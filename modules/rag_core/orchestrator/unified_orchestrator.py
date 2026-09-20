@@ -1,7 +1,8 @@
 # modules/rag_core/orchestrator/unified_orchestrator.py
 import uuid
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+import time
+from typing import List, Dict, Any, Optional, Tuple, Iterator
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -29,7 +30,8 @@ from modules.rag_core.orchestrator.strategies import (
     ConversationalStrategy,
     SessionDocumentStrategy,
     EnterpriseKnowledgeStrategy,
-    DynamicSQLStrategy
+    DynamicSQLStrategy,
+    SystemMetaStrategy
 )
 from modules.rag_core.context import (
     SessionWorkingMemory,
@@ -63,8 +65,9 @@ class UnifiedRAGOrchestrator:
         self.session_strategy = SessionDocumentStrategy(self.vector_store, self.llm, self.grounding_validator, self.prompt_engine)
         self.enterprise_strategy = EnterpriseKnowledgeStrategy(self.vector_store, self.llm, self.reranker, self.grounding_validator, self.prompt_engine)
         self.sql_strategy = DynamicSQLStrategy(self.vector_store, self.llm)
+        self.meta_strategy = SystemMetaStrategy()
 
-    def execute_unified_query(
+    def execute_unified_query_stream(
         self,
         query: str,
         user_context: TokenData,
@@ -76,7 +79,17 @@ class UnifiedRAGOrchestrator:
         top_k: int = 3,
         score_threshold: float = 0.35,
         mode: str = "auto"
-    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+    ) -> Iterator[Tuple[str, Dict[str, Any]]]:
+        start_time = time.time()
+
+        yield ("status", {
+            "step": "context_resolution",
+            "stage": "context",
+            "title": "Resolving Conversational Context",
+            "details": "Resolving conversational context and active entities from session history...",
+            "status": "in_progress"
+        })
+
         # 1. Resolve Organization & Department Context
         org_name = "Enterprise"
         dept_name = "General"
@@ -103,17 +116,46 @@ class UnifiedRAGOrchestrator:
             llm_service=self.llm
         )
 
+        details = f"Resolved query: \"{condensed_query}\"" if condensed_query != query else "Context verified from active session memory."
+        yield ("status", {
+            "step": "context_resolution",
+            "stage": "context",
+            "title": "Context Resolved",
+            "details": details,
+            "status": "completed"
+        })
+
         # 4. Strict Session Document Check (Fast Qdrant Payload Query)
         if session_id:
             has_session_documents = self.session_strategy.has_session_documents(user_context.org_id, session_id)
 
         # 5. Analyze Query Intent & Plan Execution on Disambiguated Query
+        yield ("status", {
+            "step": "query_planning",
+            "stage": "routing",
+            "title": "Planning Query Route",
+            "details": "Evaluating query intent and selecting optimal retrieval strategy...",
+            "status": "in_progress"
+        })
+
         plan = QueryPlanner.analyze_and_plan(
             query=condensed_query,
             user_context=user_context,
             has_session_documents=has_session_documents,
             mode=mode
         )
+
+        target_desc = "Relational SQL Agent" if plan.is_structured_sql else ("Session Documents" if (scope == "session" or (has_session_documents and scope != "enterprise")) else ("Conversational" if plan.is_conversational_only else "Enterprise Knowledge Base"))
+        if plan.intent_category == "SYSTEM_META":
+            target_desc = "System Meta Registry (RBAC)"
+
+        yield ("status", {
+            "step": "query_planning",
+            "stage": "routing",
+            "title": f"Route Selected: {target_desc}",
+            "details": f"Intent: {plan.intent_category} | Strategy: {target_desc}",
+            "status": "completed"
+        })
 
         strategy_kwargs = {
             "org_name": org_name,
@@ -127,11 +169,13 @@ class UnifiedRAGOrchestrator:
         response = None
         strategy_used = "enterprise"
         extra_meta = {}
+        strategy_stream = None
 
-        # --- ROUTE A: Conversational / General Knowledge ---
-        if plan.is_conversational_only:
-            logger.info(f"Query routed to ConversationalStrategy (intent: {plan.intent_category}).")
-            response = self.conversational_strategy.execute(
+        # --- ROUTE 0: System Metadata & Knowledge Source Audit (RBAC Governed) ---
+        if plan.intent_category == "SYSTEM_META":
+            logger.info("Query routed to SystemMetaStrategy stream (intent: SYSTEM_META).")
+            strategy_used = "system_meta"
+            strategy_stream = self.meta_strategy.execute_stream(
                 query=condensed_query,
                 user_context=user_context,
                 db=db,
@@ -143,12 +187,29 @@ class UnifiedRAGOrchestrator:
                 mode=mode,
                 **strategy_kwargs
             )
+
+        # --- ROUTE A: Conversational / General Knowledge ---
+        elif plan.is_conversational_only:
+            logger.info(f"Query routed to ConversationalStrategy stream (intent: {plan.intent_category}).")
             strategy_used = "conversational"
+            strategy_stream = self.conversational_strategy.execute_stream(
+                query=condensed_query,
+                user_context=user_context,
+                db=db,
+                session_id=session_id,
+                persona_id=persona_id,
+                template_id=template_id,
+                top_k=top_k,
+                score_threshold=score_threshold,
+                mode=mode,
+                **strategy_kwargs
+            )
 
         # --- ROUTE B: Dynamic Text-to-SQL for Structured Database Inquiries ---
         elif plan.is_structured_sql and db:
-            logger.info(f"Query routed to DynamicSQLStrategy (intent: {plan.intent_category}).")
-            sql_response = self.sql_strategy.execute(
+            logger.info(f"Query routed to DynamicSQLStrategy stream (intent: {plan.intent_category}).")
+            strategy_used = "sql"
+            strategy_stream = self.sql_strategy.execute_stream(
                 query=condensed_query,
                 user_context=user_context,
                 db=db,
@@ -160,32 +221,34 @@ class UnifiedRAGOrchestrator:
                 mode=mode,
                 **strategy_kwargs
             )
-            if sql_response is not None:
-                response = sql_response
-                strategy_used = "sql"
-            else:
-                logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
+
+        if strategy_stream is not None:
+            for event_type, data in strategy_stream:
+                if event_type == "status":
+                    yield ("status", data)
+                elif event_type == "delta":
+                    yield ("delta", data)
+                elif event_type == "result":
+                    response = data
+
+        # Fallback if Dynamic SQL yielded None (failed AST/schema/execution)
+        if response is None and strategy_used == "sql":
+            logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
+            yield ("status", {
+                "step": "sql_fallback",
+                "stage": "routing",
+                "title": "Fallback to Document RAG",
+                "details": "Relational query inconclusive. Routing to enterprise document search.",
+                "status": "completed"
+            })
+            strategy_stream = None
 
         # --- ROUTE C: Scoped In-Chat Documents vs Enterprise Knowledge Base ---
         if response is None:
             if scope == "session" or (has_session_documents and scope != "enterprise"):
-                logger.info(f"Query routed to SessionDocumentStrategy for session '{session_id}'.")
-                response = self.session_strategy.execute(
-                    query=condensed_query,
-                    user_context=user_context,
-                    db=db,
-                    session_id=session_id,
-                    persona_id=persona_id,
-                    template_id=template_id,
-                    top_k=top_k,
-                    score_threshold=score_threshold,
-                    mode=mode,
-                    **strategy_kwargs
-                )
+                logger.info(f"Query routed to SessionDocumentStrategy stream for session '{session_id}'.")
                 strategy_used = "session"
-            else:
-                logger.info("Query routed to EnterpriseKnowledgeStrategy.")
-                response = self.enterprise_strategy.execute(
+                strategy_stream = self.session_strategy.execute_stream(
                     query=condensed_query,
                     user_context=user_context,
                     db=db,
@@ -197,9 +260,34 @@ class UnifiedRAGOrchestrator:
                     mode=mode,
                     **strategy_kwargs
                 )
+            else:
+                logger.info("Query routed to EnterpriseKnowledgeStrategy stream.")
                 strategy_used = "enterprise"
+                strategy_stream = self.enterprise_strategy.execute_stream(
+                    query=condensed_query,
+                    user_context=user_context,
+                    db=db,
+                    session_id=session_id,
+                    persona_id=persona_id,
+                    template_id=template_id,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    mode=mode,
+                    **strategy_kwargs
+                )
+
+            for event_type, data in strategy_stream:
+                if event_type == "status":
+                    yield ("status", data)
+                elif event_type == "delta":
+                    yield ("delta", data)
+                elif event_type == "result":
+                    response = data
 
         # 6. Post-Turn State Harvesting & Working Memory Update
+        if response is None:
+            response = ("I was unable to retrieve a satisfactory answer for your query.", [], False, 0.0)
+
         answer, sources, is_grounded, confidence = response
 
         # Record authoritative APM telemetry route
@@ -208,6 +296,7 @@ class UnifiedRAGOrchestrator:
             "sql": BackendRoute.SQL,
             "session": BackendRoute.ATTACHMENTS,
             "enterprise": BackendRoute.RAG,
+            "system_meta": BackendRoute.GENERAL,
         }
         record_backend_route(_route_map.get(strategy_used, BackendRoute.RAG))
 
@@ -231,7 +320,57 @@ class UnifiedRAGOrchestrator:
             for s in sources:
                 s.pop("rows", None)
 
-        return answer, sources, is_grounded, confidence
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        yield ("metadata", {
+            "sources": sources,
+            "latency_ms": latency_ms,
+            "session_id": session_id,
+            "is_grounded": is_grounded,
+            "confidence": confidence,
+            "strategy_used": strategy_used
+        })
+
+    def execute_unified_query(
+        self,
+        query: str,
+        user_context: TokenData,
+        db: Optional[Session] = None,
+        session_id: Optional[str] = None,
+        scope: Optional[str] = None,
+        persona_id: Optional[str] = None,
+        template_id: Optional[str] = None,
+        top_k: int = 3,
+        score_threshold: float = 0.35,
+        mode: str = "auto"
+    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+        """Synchronous wrapper consuming execute_unified_query_stream for backward compatibility."""
+        accumulated_answer = ""
+        final_sources = []
+        is_grounded = True
+        confidence = 1.0
+
+        for event_type, payload in self.execute_unified_query_stream(
+            query=query,
+            user_context=user_context,
+            db=db,
+            session_id=session_id,
+            scope=scope,
+            persona_id=persona_id,
+            template_id=template_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            mode=mode
+        ):
+            if event_type == "delta":
+                accumulated_answer += payload.get("content", "")
+            elif event_type == "metadata":
+                final_sources = payload.get("sources", [])
+                is_grounded = payload.get("is_grounded", True)
+                confidence = payload.get("confidence", 1.0)
+
+        return accumulated_answer, final_sources, is_grounded, confidence
+
 
     def _try_execute_dynamic_sql(
         self,

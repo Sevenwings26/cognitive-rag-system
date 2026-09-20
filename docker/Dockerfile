@@ -18,10 +18,14 @@ RUN pip install --no-cache-dir qdrant-client pypdf openai
 # Copy the application code
 COPY . .
 
+# Setup robust entrypoint guard script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Expose the port your FastAPI app runs on
 EXPOSE 4500
 
+ENTRYPOINT ["/entrypoint.sh"]
+
 # Start Uvicorn pointing to your app entrypoint
 CMD ["python", "-m", "uvicorn", "app.main:app", "--app-dir", "/app", "--host", "0.0.0.0", "--port", "4500"]
-
-

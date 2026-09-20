@@ -1,6 +1,6 @@
 # modules/rag_core/orchestrator/strategies/conversational_strategy.py
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterator
 from sqlalchemy.orm import Session
 
 from modules.auth.domain.tokens import TokenData
@@ -21,7 +21,7 @@ class ConversationalStrategy(BaseRetrievalStrategy):
         self.llm = llm_service
         self.prompt_engine = prompt_engine or PromptEngine()
 
-    def execute(
+    def execute_stream(
         self,
         query: str,
         user_context: TokenData,
@@ -33,7 +33,7 @@ class ConversationalStrategy(BaseRetrievalStrategy):
         score_threshold: float = 0.35,
         mode: str = "auto",
         **kwargs
-    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+    ) -> Iterator[Tuple[str, Any]]:
         org_name = kwargs.get("org_name", "Enterprise")
         dept_name = kwargs.get("dept_name", "General")
         intent_category = kwargs.get("intent_category", "CONVERSATIONAL")
@@ -64,11 +64,30 @@ class ConversationalStrategy(BaseRetrievalStrategy):
                 system_instruction = self.prompt_engine.render_template(persona.system_instruction_template, template_vars)
                 temperature = persona.temperature / 10.0 if persona.temperature > 1 else persona.temperature
 
-        answer = self.llm.generate_text(
-            query,
-            system_instruction=system_instruction,
-            temperature=max(temperature, 0.5)
-        )
+        yield ("status", {
+            "step": "conversational_synthesis",
+            "stage": "synthesis",
+            "title": "Generating Conversational Response",
+            "details": f"Generating assistant response tailored for {org_name}...",
+            "status": "in_progress"
+        })
+
+        answer = ""
+        if hasattr(self.llm, "stream_text"):
+            for token in self.llm.stream_text(
+                query,
+                system_instruction=system_instruction,
+                temperature=max(temperature, 0.5)
+            ):
+                answer += token
+                yield ("delta", {"content": token})
+        else:
+            answer = self.llm.generate_text(
+                query,
+                system_instruction=system_instruction,
+                temperature=max(temperature, 0.5)
+            )
+            yield ("delta", {"content": answer})
 
         if db:
             AuditLogger.log(
@@ -81,4 +100,44 @@ class ConversationalStrategy(BaseRetrievalStrategy):
                 details={"query": query[:200], "intent": intent_category}
             )
 
-        return answer, [], True, 1.0
+        yield ("status", {
+            "step": "conversational_synthesis",
+            "stage": "synthesis",
+            "title": "Response Generated",
+            "details": "Conversational response generated.",
+            "status": "completed"
+        })
+
+        yield ("result", (answer, [], True, 1.0))
+
+    def execute(
+        self,
+        query: str,
+        user_context: TokenData,
+        db: Optional[Session] = None,
+        session_id: Optional[str] = None,
+        persona_id: Optional[str] = None,
+        template_id: Optional[str] = None,
+        top_k: int = 3,
+        score_threshold: float = 0.35,
+        mode: str = "auto",
+        **kwargs
+    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
+        """Synchronous wrapper consuming execute_stream for backward compatibility."""
+        stream = self.execute_stream(
+            query=query,
+            user_context=user_context,
+            db=db,
+            session_id=session_id,
+            persona_id=persona_id,
+            template_id=template_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            mode=mode,
+            **kwargs
+        )
+        for item_type, data in stream:
+            if item_type == "result":
+                return data
+        return ("", [], True, 1.0)
+

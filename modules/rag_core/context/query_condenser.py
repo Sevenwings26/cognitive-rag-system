@@ -3,7 +3,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 
-from modules.rag_core.context.models import SessionWorkingMemory
+from modules.rag_core.context.models import SessionWorkingMemory, EntityScope
 from modules.rag_core.providers.llm import BaseLLMService
 
 logger = logging.getLogger("query_condenser")
@@ -24,6 +24,16 @@ class QueryCondenser:
         re.IGNORECASE
     )
 
+    TOPIC_SHIFT_PATTERN = re.compile(
+        r"\b(apart from|other than|besides|excluding|which other|what other|which else|what else|across all|in general|overall)\b",
+        re.IGNORECASE
+    )
+
+    SYSTEM_META_PATTERN = re.compile(
+        r"\b(data sources?|connected databases?|databases? (?:registered|connected|available)|how many sources|what systems|registered connectors|on this system|in this system)\b",
+        re.IGNORECASE
+    )
+
     SYSTEM_INSTRUCTION = (
         "You are an expert conversational disambiguation engine and anaphora resolver for enterprise data and RAG systems.\n"
         "Your task is to rewrite a user's follow-up question into a single, self-contained, standalone question by resolving all pronouns, ellipses, and ambiguous references using the provided conversation history and known entities.\n\n"
@@ -32,7 +42,9 @@ class QueryCondenser:
         "2. Do NOT dump past search keys (such as previous BVN numbers or past query terms) into the rewritten question if they are not relevant to the new question. Keep the rewritten question natural and focused.\n"
         "3. Preserve the exact intent, questions, system names, and domain concepts requested by the user. Do NOT modify terms like 'lending system', 'accounting', 'payments', 'core banking', etc. Do not answer the question; only rewrite it.\n"
         "4. Output ONLY the standalone rewritten question. Do not include quotes, markdown fences, or conversational filler.\n"
-        "5. CRITICAL: NEVER insert or hallucinate specific database backend or schema names (e.g. noros_customer_db, noros_lending_db, postgres, mssql) into the rewritten question unless the user explicitly named them in their query. Retain the user's natural language domain terms (e.g., 'in our lending system', 'credit facilities', 'loans')."
+        "5. CRITICAL: NEVER insert or hallucinate specific database backend or schema names (e.g. noros_customer_db, noros_lending_db, postgres, mssql) into the rewritten question unless the user explicitly named them in their query. Retain the user's natural language domain terms (e.g., 'in our lending system', 'credit facilities', 'loans').\n"
+        "6. TOPIC SHIFTS & EXCLUSIONS: When the user asks an exclusionary or aggregate question (e.g., 'Apart from X, which other industries...', 'Which other organization are we serving?'), do NOT attach individual person names or customer IDs. Rewrite as a clear categorical inquiry (e.g., 'Apart from Dangote, which other corporate employers or industries do our customers belong to?').\n"
+        "7. SYSTEM INQUIRIES: If the user asks about system architecture, data sources, or connectors (e.g., 'How many data sources do we have on this system?'), NEVER bind customer IDs, BVNs, or banking entities. Keep the inquiry focused strictly on the system data sources."
     )
 
     @classmethod
@@ -52,6 +64,10 @@ class QueryCondenser:
 
         # If referential token is present, we must condense
         if cls.REFERENTIAL_PATTERN.search(query):
+            return True
+
+        # If topic shift or system meta inquiry, condense to ensure clean categorical query
+        if cls.TOPIC_SHIFT_PATTERN.search(query) or cls.SYSTEM_META_PATTERN.search(query):
             return True
 
         # Elliptical starters like "What about...", "And for...", "Any..."
@@ -82,6 +98,17 @@ class QueryCondenser:
             return query
 
         try:
+            # Determine target scope based on query characteristics
+            clean_q = query.strip().lower()
+            target_scope = EntityScope.INDIVIDUAL
+
+            if cls.SYSTEM_META_PATTERN.search(clean_q):
+                target_scope = EntityScope.SYSTEM_META
+                memory.evict_for_topic_shift(EntityScope.SYSTEM_META)
+            elif cls.TOPIC_SHIFT_PATTERN.search(clean_q):
+                target_scope = EntityScope.AGGREGATE
+                memory.evict_for_topic_shift(EntityScope.AGGREGATE)
+
             # Format history turns (sanitizing technical table dumps and DB source names)
             history_lines = []
             for msg in history[-6:]:
@@ -98,7 +125,7 @@ class QueryCondenser:
                     history_lines.append(f"{role}: {content}")
 
             history_text = "\n".join(history_lines) if history_lines else "None"
-            memory_context = memory.get_summary_context() or "None"
+            memory_context = memory.get_summary_context(target_scope) or "None"
 
             prompt = (
                 f"=== Known Entities / Working Memory ===\n{memory_context}\n\n"

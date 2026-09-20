@@ -17,6 +17,7 @@ class ChatQueryPayload(BaseModel):
     top_k: int = Field(3, description="Number of final context chunks after reranking")
     score_threshold: float = Field(0.35, description="Minimum similarity score threshold")
     mode: Optional[str] = Field("auto", description="Execution mode: 'auto', 'rag', 'general'")
+    stream: bool = Field(False, description="Whether to stream retrieval milestones and response tokens via Server-Sent Events (SSE)")
 
 class SourceCitation(BaseModel):
     filename: str

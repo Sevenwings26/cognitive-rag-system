@@ -30,7 +30,14 @@ class DynamicSQLAgent:
         "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle). When an inquiry asks for transaction activity or asks for BOTH a total/aggregate metric (e.g. total inflow, sum) AND an extreme (e.g. largest credit deposit), do NOT limit to 1 row; either compute the aggregates (e.g. SUM, MAX, COUNT) or SELECT all qualifying transactions up to LIMIT 50 so that both totals and specifics are available.\\n"
         "6. For entity lookup questions (e.g. 'Who is the customer...', 'Find customer...', 'Check account...'), SELECT relevant descriptive attributes (such as first_name, last_name, customer_type, verification_status, name) alongside IDs so the inquiry can be fully answered.\\n"
         "7. If [CONTEXT BINDINGS] are provided in the inquiry (e.g. customer_id = 1008, account_number = '0123456708'), use those explicit primary or foreign key values in your WHERE / JOIN clauses to locate the exact records.\\n"
-        "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary."
+        "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary.\\n"
+        "9. SCHEMA SEMANTICS & VALUE PROFILING: Inspect table column definitions, database comments, and '-- Sample Column Values' annotations in the Schema Context to accurately disambiguate entity concepts:\\n"
+        "   - When querying organizations, companies, employers, or client corporate affiliations, identify and match against columns whose sample values contain enterprise/corporate names (distinct from personal occupations or individual professions).\\n"
+        "   - When asked for distinct organizations, companies, or industries, use SELECT DISTINCT on the corporate affiliation column and apply exclusion filters (e.g. WHERE <col> NOT ILIKE '%<excluded_name>%') against that same column.\\n"
+        "   - Use personal occupation/job title columns ONLY when the user explicitly inquires about professions, roles, or job titles.\\n"
+        "10. SQL SYNTAX & QUERY FORMULATION:\\n"
+        "   - Query the primary table directly (e.g. SELECT ... FROM accounts WHERE customer_id = ...) without creating unnecessary UNION statements with other tables.\\n"
+        "   - In queries with UNION / UNION ALL, any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number')."
     )
 
     @classmethod
@@ -41,6 +48,16 @@ class DynamicSQLAgent:
             cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
             cleaned = re.sub(r"\s*```$", "", cleaned)
         cleaned = cleaned.strip().rstrip(";")
+
+        # Strip table aliases from ORDER BY in UNION queries (standard SQL requirement)
+        if re.search(r"\bUNION\b", cleaned, re.IGNORECASE):
+            cleaned = re.sub(
+                r"(\bORDER\s+BY\s+)[a-zA-Z_]\w*\.([a-zA-Z_]\w*)",
+                r"\1\2",
+                cleaned,
+                flags=re.IGNORECASE
+            )
+
         return cleaned
 
     @classmethod
