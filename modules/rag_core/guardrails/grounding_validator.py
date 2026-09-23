@@ -1,5 +1,6 @@
 # modules/rag_core/guardrails/grounding_validator.py
 import logging
+import re
 from typing import List, Dict, Any, Tuple
 
 logger = logging.getLogger("grounding_validator")
@@ -36,6 +37,16 @@ class GroundingValidator:
             filename = chunk.get("filename", "Unknown Document")
             content = chunk.get("content", "").strip()
             score = chunk.get("rerank_score", chunk.get("vector_score", 0.0))
+
+            # Sanitize spreadsheet empty column headers and N/A bloat (e.g. Column_2 | Column_3 ... | Column_16379)
+            content = re.sub(r"(\|\s*Column_\d+\s*){3,}", "", content)
+            content = re.sub(r"(\|\s*N/A\s*){4,}", "", content)
+            if len(content) > 4000:
+                content = content[:4000] + "\n...[truncated large tabular content]..."
+
+            # Skip chunks that become virtually empty after removing repetitive column bloat
+            if len(content.strip()) < 30:
+                continue
 
             context_blocks.append(f"[Document: {filename} | Excerpt {idx}]\n{content}\n")
             raw_sources.append({

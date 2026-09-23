@@ -138,6 +138,7 @@ class ChatSession(Base):
     user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # Nullable for guests
     title = Column(String(255), default="New Chat")
     created_at = Column(DateTime, default=datetime.utcnow)
+    working_memory = Column(JSON, nullable=True)  # Durable blackboard snapshot - fallback when Redis TTL expires
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
 
 class ChatMessage(Base):

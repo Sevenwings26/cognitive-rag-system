@@ -38,13 +38,16 @@ class QueryCondenser:
         "You are an expert conversational disambiguation engine and anaphora resolver for enterprise data and RAG systems.\n"
         "Your task is to rewrite a user's follow-up question into a single, self-contained, standalone question by resolving all pronouns, ellipses, and ambiguous references using the provided conversation history and known entities.\n\n"
         "RULES:\n"
-        "1. Replace pronouns ('he', 'his', 'she', 'her', 'it', 'they', 'this customer', 'that document') with explicit names and relevant entity context (e.g., 'customer Adebayo Adekunle (customer_id: 1008)').\n"
+        "1. Replace pronouns ('he', 'his', 'she', 'her', 'it', 'they', 'this customer', 'that document') with explicit names and relevant entity context (e.g., 'customer Adebayo Adekunle (customer_id: 1008)'). If an identifier attribute (like customer_id or customer_number) is not present in Known Entities, do NOT output 'customer_id: unknown' or 'customer_number: unknown'; simply omit unknown attributes.\n"
         "2. Do NOT dump past search keys (such as previous BVN numbers or past query terms) into the rewritten question if they are not relevant to the new question. Keep the rewritten question natural and focused.\n"
         "3. Preserve the exact intent, questions, system names, and domain concepts requested by the user. Do NOT modify terms like 'lending system', 'accounting', 'payments', 'core banking', etc. Do not answer the question; only rewrite it.\n"
         "4. Output ONLY the standalone rewritten question. Do not include quotes, markdown fences, or conversational filler.\n"
         "5. CRITICAL: NEVER insert or hallucinate specific database backend or schema names (e.g. noros_customer_db, noros_lending_db, postgres, mssql) into the rewritten question unless the user explicitly named them in their query. Retain the user's natural language domain terms (e.g., 'in our lending system', 'credit facilities', 'loans').\n"
         "6. TOPIC SHIFTS & EXCLUSIONS: When the user asks an exclusionary or aggregate question (e.g., 'Apart from X, which other industries...', 'Which other organization are we serving?'), do NOT attach individual person names or customer IDs. Rewrite as a clear categorical inquiry regarding corporate employers or organizations (e.g., 'Apart from Dangote, which other corporate employers or industries do our customers belong to?').\n"
-        "7. SYSTEM INQUIRIES: If the user asks about system architecture, data sources, or connectors (e.g., 'How many data sources do we have on this system?'), NEVER bind customer IDs, BVNs, or banking entities. Keep the inquiry focused strictly on the system data sources."
+        "7. SYSTEM INQUIRIES: If the user asks about system architecture, data sources, or connectors (e.g., 'How many data sources do we have on this system?'), NEVER bind customer IDs, BVNs, or banking entities. Keep the inquiry focused strictly on the system data sources.\n"
+        "8. VENDOR & DOCUMENT ENTITIES VS CUSTOMER ENTITIES: When the user refers to a 'vendor', 'supplier', 'provider', 'partner', or 'document' (e.g., 'back to that vendor, what is his email address?', 'that vendor', 'the vendor'), NEVER bind or insert bank customer names or customer IDs (e.g. Adebayo Adekunle). Instead, resolve pronouns to the vendor referenced in the conversation history (e.g., 'MTN vendor', 'MTN Business Solutions') or the vendor's primary contact.\n"
+        "9. BVN INTEGRITY: Regulatory BVNs must always be exactly 11 digits (e.g., '90000001008'). NEVER alter, truncate, or pad digits to any BVN.\n"
+        "10. TENANT AND HOST ORGANIZATION: NEVER insert or inject the host organization / tenant name (e.g., 'Bluesources Limited') into customer queries (e.g. do NOT rewrite 'who are our customers' to 'who are customers of Bluesources Limited' or 'whose employer is Bluesources Limited'). 'Our customers' simply means bank customers. Keep it as 'customers'."
     )
 
     @classmethod
@@ -58,6 +61,10 @@ class QueryCondenser:
         Fast-path heuristic: determines whether query rewriting is necessary.
         Bypasses LLM rewriting for first-turn queries and unambiguous self-contained prompts (0 ms overhead).
         """
+        # Pure conversational tokens / acknowledgements should never be rewritten
+        if re.match(r"^\s*(alright|all right|okay|ok|cool|great|got it|sure|noted|yes|no|yeah|yep|nope|fine|understood|thanks|thank you|hi|hello|bye)[\s.!,]*$", query, re.IGNORECASE):
+            return False
+
         # If no history and no active entities/names in memory, no context exists to resolve
         if not history and not memory.active_entities and not memory.active_names:
             return False
@@ -125,7 +132,18 @@ class QueryCondenser:
                     history_lines.append(f"{role}: {content}")
 
             history_text = "\n".join(history_lines) if history_lines else "None"
-            memory_context = memory.get_summary_context(target_scope) or "None"
+
+            is_vendor_inquiry = any(term in clean_q for term in ["vendor", "supplier", "provider", "partner"])
+            if is_vendor_inquiry:
+                # Suppress customer IDs so the LLM does not map "vendor" pronouns to a bank customer
+                vendor_context_lines = []
+                if getattr(memory, "active_vendors", None):
+                    vendor_context_lines.append(f"Referenced Vendors / Partners: {', '.join(memory.active_vendors)}")
+                if memory.active_documents:
+                    vendor_context_lines.append(f"Referenced Documents: {', '.join(memory.active_documents)}")
+                memory_context = "\n".join(vendor_context_lines) if vendor_context_lines else "None"
+            else:
+                memory_context = memory.get_summary_context(target_scope) or "None"
 
             prompt = (
                 f"=== Known Entities / Working Memory ===\n{memory_context}\n\n"

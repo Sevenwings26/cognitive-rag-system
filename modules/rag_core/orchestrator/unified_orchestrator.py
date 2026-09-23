@@ -107,7 +107,7 @@ class UnifiedRAGOrchestrator:
                     dept_name = dept.name
 
         # 2. Universal Working Memory & History Context
-        working_memory = SessionContextManager.get_memory(session_id)
+        working_memory = SessionContextManager.get_memory(session_id, db=db)
         history = SessionContextManager.get_recent_history(db, session_id, current_query=query)
 
         # 3. Anaphora Resolution & Query Condensation
@@ -235,15 +235,27 @@ class UnifiedRAGOrchestrator:
 
         # Fallback if Dynamic SQL yielded None (failed AST/schema/execution)
         if response is None and strategy_used == "sql":
-            logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
-            yield ("status", {
-                "step": "sql_fallback",
-                "stage": "routing",
-                "title": "Fallback to Document RAG",
-                "details": "Relational query inconclusive. Routing to enterprise document search.",
-                "status": "completed"
-            })
-            strategy_stream = None
+            is_explicit_db = plan.is_structured_sql or any(
+                kw in condensed_query.lower() for kw in ["database", "table", "bvn", "account balance", "customer", "customers", "loan", "loans"]
+            )
+            if not is_explicit_db:
+                logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
+                yield ("status", {
+                    "step": "sql_fallback",
+                    "stage": "routing",
+                    "title": "Fallback to Document RAG",
+                    "details": "Relational query inconclusive. Routing to enterprise document search.",
+                    "status": "completed"
+                })
+                strategy_stream = None
+            else:
+                logger.info("[DYNAMIC SQL] SQL query returned no result; maintaining database error boundary.")
+                fallback_msg = (
+                    "I was unable to retrieve matching database records for this inquiry across our connected database systems. "
+                    "Please verify the requested identifiers or search criteria."
+                )
+                yield ("delta", {"content": fallback_msg})
+                response = (fallback_msg, [], False, 0.0)
 
         # --- ROUTE C: Scoped In-Chat Documents vs Enterprise Knowledge Base ---
         if response is None:
@@ -344,7 +356,7 @@ class UnifiedRAGOrchestrator:
         #     answer = f"{answer.rstrip()}{recommendations_block}"
         # =========================================================================
 
-        SessionContextManager.save_memory(updated_memory)
+        SessionContextManager.save_memory(updated_memory, db=db)
 
         # Emit typed SSE actions event immediately after execution
         yield ("actions", {

@@ -33,12 +33,16 @@ class DynamicSQLAgent:
         "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary.\\n"
         "9. SCHEMA SEMANTICS & VALUE PROFILING: Inspect table column definitions, database comments, and '-- Sample Column Values' annotations in the Schema Context to accurately disambiguate entity concepts:\\n"
         "   - When querying organizations, companies, employers, corporate clients, or industries/sectors, identify and match against columns whose sample values contain enterprise/corporate company names (e.g. 'employer' containing company names like 'Julius Berger', 'Unilever', distinct from personal 'occupation' job titles and internal classification codes like 'customer_segment').\\n"
-        "   - When asked for other/distinct organizations, companies, employers, or industries (e.g. 'Apart from X, which other industries/companies...'), use SELECT DISTINCT directly on that corporate employer column with exclusion filters (e.g. SELECT DISTINCT employer FROM customers WHERE employer NOT ILIKE '%<excluded>%' AND employer IS NOT NULL). NEVER query codes or internal segments (like customer_segment) when asked about industries or companies.\\n"
+        "   - When asked for other/distinct organizations, companies, employers, or industries (e.g. 'Apart from X, which other...', 'Which other customer employers like X...'), use SELECT DISTINCT directly on that corporate employer column with exclusion filter ONLY (e.g. SELECT DISTINCT employer FROM customers WHERE employer NOT ILIKE '%<excluded>%' AND employer IS NOT NULL). NEVER add a positive ILIKE for the excluded entity alongside NOT ILIKE! NEVER query codes or internal segments (like customer_segment) when asked about industries or companies.\\n"
         "   - NEVER use scalar comparisons (=, !=) with subqueries that may return multiple rows; use NOT ILIKE directly or NOT IN (SELECT ...).\\n"
+        "   - DISAMBIGUATION (CUSTOMER EMPLOYERS VS BANK EMPLOYEES): When the inquiry asks for employees of an external company who are bank customers (e.g. 'Nestle employees who are our customers', 'customers whose employer is Nestle', 'who works at Dangote'), query the customers table with WHERE employer ILIKE '%<company>%' (e.g. ILIKE '%Nestle%'). NEVER query internal bank employee tables (employees) which only store internal bank staff.\\n"
+        "   - The host organization / tenant name (e.g. 'Bluesources Limited') is the platform/bank itself, NOT a customer's employer. NEVER generate WHERE employer ILIKE '%<tenant_name>%' or subqueries matching the host organization name unless the user specifically asks for employees of the host bank itself.\\n"
+        "   - SCHEMA ISOLATION (DOMAIN DATABASES): In domain databases such as lending (noros_lending_db) or core banking, tables link to customers via customer_id (integer). If the Schema Context does NOT contain a 'customers' or 'bvn_records' table, NEVER invent, join, or subquery 'customers'! Use the customer_id provided in [CONTEXT BINDINGS] directly (e.g. WHERE customer_id = 1008). If no customer_id is provided, query using ONLY the valid tables and columns listed in the Schema Context.\\n"
         "   - Use personal occupation/job title columns ONLY when the user explicitly inquires about professions, roles, or job titles.\\n"
         "10. SQL SYNTAX & QUERY FORMULATION:\\n"
         "   - Query the primary table directly (e.g. SELECT ... FROM accounts WHERE customer_id = ...) without creating unnecessary UNION statements with other tables.\\n"
-        "   - In queries with UNION / UNION ALL, any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number').\\n"
+        "   - When an inquiry asks for both account details/lists AND a total balance/sum (e.g. 'What bank accounts does he have with us, and what is his current total deposit balance?'), DO NOT attempt to combine individual account rows and a grand total SUM into a single query using UNION ALL with mismatched columns! Instead, simply SELECT the individual account records including their balances (account_id, account_number, account_type, currency, current_balance, available_balance) for the customer; the downstream reasoning model will compute the total sum from these rows.\\n"
+        "   - In queries with UNION / UNION ALL, each subquery in the UNION must have the EXACT same number of columns with compatible types, and any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number').\\n"
         "11. AGGREGATES VS DETAIL ROWS: NEVER mix aggregate functions (SUM, AVG, COUNT, MAX, MIN) with unaggregated individual detail columns in the same SELECT statement without a GROUP BY clause, as this causes database syntax/grouping errors."
     )
 
@@ -97,12 +101,15 @@ class DynamicSQLAgent:
                     f"Generate the exact SQL SELECT query to answer this inquiry accurately:"
                 )
             else:
+                retry_hint = ""
+                if "invalid object name 'customers'" in last_error.lower():
+                    retry_hint = "\nNote: The table 'customers' does NOT exist in this database. Use the customer_id provided in [CONTEXT BINDINGS] to query the primary table directly without joining or subquerying 'customers'."
                 prompt = (
                     f"=== Target Database Dialect ===\n{canonical_dialect.upper()}\n\n"
                     f"=== Schema Context (Table DDLs) ===\n{schema_context}\n\n"
                     f"=== User Inquiry ===\n{user_query}\n\n"
                     f"=== Previous Failed SQL ===\n{generated_sql}\n\n"
-                    f"=== Execution Error Diagnostic ===\n{last_error}\n\n"
+                    f"=== Execution Error Diagnostic ===\n{last_error}{retry_hint}\n\n"
                     f"Fix the error and generate a corrected SQL SELECT query using valid tables and columns:"
                 )
 

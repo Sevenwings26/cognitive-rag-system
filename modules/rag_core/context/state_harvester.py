@@ -83,6 +83,11 @@ class StateHarvester:
         is_multi_row = len(rows) > 1
         is_collection = memory.scope == EntityScope.COLLECTION.value
 
+        if is_collection and distinct_customers:
+            memory.collection_ids = sorted(list(distinct_customers))
+        elif not is_collection:
+            memory.collection_ids.clear()
+
         for row in rows[:10]:
             if not isinstance(row, dict):
                 continue
@@ -117,11 +122,13 @@ class StateHarvester:
                     memory.active_metrics[metric] = str(row[metric])
 
         # 2. Extract Entities from Query via Regex
-        # BVN regex (11 digits starting with 9 or standard 11-digit pattern)
+        # BVN regex (Strictly 11 digits regulatory format)
         if memory.scope not in (EntityScope.AGGREGATE.value, EntityScope.SYSTEM_META.value):
-            bvn_match = re.search(r"\b(9\d{10}|\d{11})\b", query)
-            if bvn_match and "bvn" not in memory.active_entities:
-                memory.active_entities["bvn"] = bvn_match.group(1)
+            bvn_match = re.search(r"\b(\d{11})\b", query)
+            if bvn_match:
+                bvn_val = bvn_match.group(1).strip()
+                if len(bvn_val) == 11 and "bvn" not in memory.active_entities:
+                    memory.active_entities["bvn"] = bvn_val
 
             # Explicit customer_id pattern in query or answer (only for individual inquiry)
             if not is_collection:
@@ -140,18 +147,39 @@ class StateHarvester:
             if fname and not fname.startswith("schema_") and fname not in memory.active_documents:
                 memory.active_documents.append(fname)
 
-        # Bound active documents to most recent 5
+        # 4. Harvest Referenced Vendors from Document RAG or Queries
+        vendor_matches = re.findall(r"\b(MTN|Samsung|Slot NG|PowerCert|Brand Forge|TalentLink|Vanguard Security|Pinnacle Learning)\b", query + " " + answer, re.IGNORECASE)
+        for v in vendor_matches:
+            v_clean = v.strip()
+            if v_clean.upper() == "MTN":
+                v_clean = "MTN Business Solutions"
+            elif v_clean.upper() == "SAMSUNG":
+                v_clean = "Samsung (Slot NG)"
+            elif v_clean.upper() == "SLOT NG":
+                v_clean = "Slot NG"
+            if v_clean not in memory.active_vendors:
+                memory.active_vendors.append(v_clean)
+
+        generic_vendor_match = re.search(r"\b([a-zA-Z0-9_\-]{2,20})\s+vendor\b", query, re.IGNORECASE)
+        if generic_vendor_match:
+            gv = generic_vendor_match.group(1).strip()
+            stopwords = {"that", "the", "this", "our", "a", "which", "each", "every", "another", "his", "her", "their", "first", "contact", "name"}
+            if gv.lower() not in stopwords and gv not in memory.active_vendors:
+                memory.active_vendors.append(gv)
+
+        # Bound active collections
         if len(memory.active_documents) > 5:
             memory.active_documents = memory.active_documents[-5:]
-
-        # Bound active names to most recent 3
         if len(memory.active_names) > 3:
             memory.active_names = memory.active_names[-3:]
+        if len(memory.active_vendors) > 3:
+            memory.active_vendors = memory.active_vendors[-3:]
 
         logger.info(
             f"[STATE HARVESTER] Turn {memory.turn_count} recorded. "
             f"Entities: {list(memory.active_entities.keys())}, "
             f"Names: {memory.active_names}, "
+            f"Vendors: {memory.active_vendors}, "
             f"Metrics: {list(memory.active_metrics.keys())}"
         )
 

@@ -40,6 +40,7 @@ class SessionWorkingMemory:
     active_entities: Dict[str, Any] = field(default_factory=dict)     # e.g. {"customer_id": 1008, "bvn": "90000001008", ...}
     active_names: List[str] = field(default_factory=list)             # e.g. ["Adebayo Adekunle"]
     active_documents: List[str] = field(default_factory=list)         # e.g. ["expense_policy.docx"]
+    active_vendors: List[str] = field(default_factory=list)           # e.g. ["MTN Business Solutions", "Slot NG"]
     active_metrics: Dict[str, Any] = field(default_factory=dict)      # e.g. {"balance": "88450000.00", "interest_rate": "13.00"}
     last_target_database: Optional[str] = None                        # e.g. "noros_customer_db", "noros_core_banking_db"
     last_strategy: Optional[str] = None                               # e.g. "sql", "enterprise", "session", "system_meta"
@@ -47,6 +48,7 @@ class SessionWorkingMemory:
     scope: str = EntityScope.INDIVIDUAL.value                         # Current conversational entity scope
     active_topic: Optional[str] = None                               # Topic indicator (e.g. "customer_kyc", "employers")
     primary_anchor_id: Optional[Any] = None                           # Singular anchor ID to avoid multi-row overwrite drift
+    collection_ids: List[Any] = field(default_factory=list)           # List of entity/customer IDs in a collection/multi-row scope
     suggested_actions: List[Dict[str, Any]] = field(default_factory=list) # Proactive next best actions
 
     def to_dict(self) -> Dict[str, Any]:
@@ -59,6 +61,7 @@ class SessionWorkingMemory:
             active_entities=data.get("active_entities") or {},
             active_names=data.get("active_names") or [],
             active_documents=data.get("active_documents") or [],
+            active_vendors=data.get("active_vendors") or [],
             active_metrics=data.get("active_metrics") or {},
             last_target_database=data.get("last_target_database"),
             last_strategy=data.get("last_strategy"),
@@ -66,6 +69,7 @@ class SessionWorkingMemory:
             scope=data.get("scope", EntityScope.INDIVIDUAL.value),
             active_topic=data.get("active_topic"),
             primary_anchor_id=data.get("primary_anchor_id"),
+            collection_ids=data.get("collection_ids") or [],
             suggested_actions=data.get("suggested_actions") or []
         )
 
@@ -89,6 +93,7 @@ class SessionWorkingMemory:
             # Suppress individual ID anchors to avoid Frankenstein entity binds
             self.active_entities.clear()
             self.active_names.clear()
+            self.collection_ids.clear()
             self.primary_anchor_id = None
 
     def get_summary_context(self, target_scope: Optional[EntityScope] = None) -> str:
@@ -103,12 +108,18 @@ class SessionWorkingMemory:
             return ""
 
         parts = []
+        if self.active_vendors:
+            parts.append(f"Referenced Vendors / Partners: {', '.join(self.active_vendors)}")
+
         if effective_scope != EntityScope.AGGREGATE.value and self.active_entities:
             ent_strs = [f"{k}: {v}" for k, v in self.active_entities.items()]
             parts.append(f"Known Entities: {', '.join(ent_strs)}")
 
         if effective_scope != EntityScope.AGGREGATE.value and self.active_names:
             parts.append(f"Known Names: {', '.join(self.active_names)}")
+
+        if effective_scope != EntityScope.AGGREGATE.value and self.collection_ids:
+            parts.append(f"Referenced Customer IDs: {', '.join(str(c) for c in self.collection_ids)}")
 
         if self.active_metrics:
             met_strs = [f"{k}: {v}" for k, v in self.active_metrics.items()]

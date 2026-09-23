@@ -11,7 +11,8 @@ class QueryPlanner:
         r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)\b",
         r"^\s*(who are you|what can you do|help me|how does this work|what is your name)\b",
         r"^\s*(thank you|thanks|bye|goodbye|see you|good night)\b",
-        r"^\s*(how are you|how's it going|what's up)\b"
+        r"^\s*(how are you|how's it going|what's up)\b",
+        r"^\s*(alright|all right|okay|ok|cool|great|got it|sure|noted|yes|no|yeah|yep|nope|fine|understood|sounds good|perfect|awesome|nice)[\s.!,]*$"
     ]
 
     STRUCTURED_SQL_KEYWORDS = [
@@ -97,16 +98,17 @@ class QueryPlanner:
             )
 
         # 2. Dynamic Auto-Routing:
-        # A. Conversational / Greetings
-        for pattern in cls.CONVERSATIONAL_PATTERNS:
-            if re.search(pattern, lower_query):
-                return QueryPlan(
-                    is_conversational_only=True,
-                    target_scopes=[],
-                    sub_queries=[clean_query],
-                    intent_category="CONVERSATIONAL",
-                    is_structured_sql=False
-                )
+        # A. Conversational / Greetings (only if not an explicit SQL or Document query)
+        if not is_sql_intent and not is_doc_intent:
+            for pattern in cls.CONVERSATIONAL_PATTERNS:
+                if re.search(pattern, lower_query):
+                    return QueryPlan(
+                        is_conversational_only=True,
+                        target_scopes=[],
+                        sub_queries=[clean_query],
+                        intent_category="CONVERSATIONAL",
+                        is_structured_sql=False
+                    )
 
         is_doc_intent = any(re.search(p, lower_query) for p in cls.DOCUMENT_RAG_KEYWORDS)
 

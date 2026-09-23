@@ -37,7 +37,13 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
     # Semantic database mapping for banking / enterprise domains with primary & secondary weights
     DOMAIN_TABLE_KEYWORDS = {
         "noros_customer_db": {
-            "primary": ["bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is", "find customer", "look up customer", "address", "segment", "organization", "organizations", "company", "companies", "employer", "employers", "industry", "industries", "sector", "sectors", "corporate", "serving", "clientele"],
+            "primary": [
+                "bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is",
+                "find customer", "look up customer", "address", "segment", "organization", "organizations",
+                "company", "companies", "employer", "employers", "industry", "industries", "sector", "sectors",
+                "corporate", "serving", "clientele", "employee who are our customers", "employees who are our customers",
+                "their employee", "their employees", "employee of", "employees of", "employed by", "works at", "work at"
+            ],
             "secondary": ["customer", "customers", "client", "person", "individual"]
         },
         "noros_core_banking_db": {
@@ -57,8 +63,8 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             "secondary": ["screening", "flagged"]
         },
         "noros_operations_db": {
-            "primary": ["branch", "branches", "atm", "atms", "employee", "employees", "relationship_manager", "relationship_managers"],
-            "secondary": ["operation", "operations"]
+            "primary": ["branch", "branches", "atm", "atms", "relationship_manager", "relationship_managers", "bank employee", "bank employees", "internal employee", "internal employees", "bank staff"],
+            "secondary": ["operation", "operations", "employee", "employees", "staff"]
         }
     }
 
@@ -112,6 +118,22 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 if db_name in content or db_name in filename:
                     scores[db_name] += 5
 
+        # 4. Disambiguation Boost: When inquiring about customers/clientele, boost noros_customer_db
+        has_customer_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
+            "customer", "customers", "client", "clients", "our customer", "our customers", "who are our customers"
+        ])
+        if has_customer_kw and "noros_customer_db" in scores:
+            scores["noros_customer_db"] += 30
+            # If asking about customers, penalize noros_operations_db unless branch/atm is explicitly asked
+            if not any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in ["branch", "branches", "atm", "atms", "relationship_manager"]):
+                scores["noros_operations_db"] = max(0, scores.get("noros_operations_db", 0) - 20)
+
+        # 5. Core Banking Boost: When inquiring about accounts or balances, boost noros_core_banking_db
+        has_balance_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
+            "account balance", "account balances", "balances", "balance", "total deposit", "deposit balance", "deposit accounts", "bank accounts"
+        ])
+        if has_balance_kw and "noros_core_banking_db" in scores:
+            scores["noros_core_banking_db"] += 50
 
         best_db, best_score = max(scores.items(), key=lambda x: x[1])
         if best_score > 0:
@@ -192,6 +214,47 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         except Exception as ref_err:
             logger.warning(f"[DYNAMIC SQL] Dynamic schema reflection failed: {ref_err}")
             return "", []
+
+    def _resolve_customer_id_by_bvn(
+        self,
+        bvn: str,
+        user_context: TokenData,
+        db: Optional[Session]
+    ) -> Optional[int]:
+        """
+        Fast cross-database identity bridge: Resolves a regulatory 11-digit BVN
+        to customer_id from noros_customer_db so domain-isolated databases
+        (noros_lending_db, noros_core_banking_db) can filter by primary key.
+        """
+        if not db or not bvn:
+            return None
+        try:
+            from modules.governance.domain.models import IngestionJob
+            from core.crypto import decrypt_connection_config
+            from modules.connectors.security.sql_guard import SQLSecurityGuard
+            from sqlalchemy import create_engine, text
+
+            cust_job = db.query(IngestionJob).filter(
+                IngestionJob.org_id == user_context.org_id,
+                IngestionJob.name == "noros_customer_db"
+            ).first()
+            if not cust_job:
+                return None
+
+            decrypted = decrypt_connection_config(cust_job.connection_config)
+            dialect = SQLSecurityGuard.canonical_dialect(cust_job.source_type)
+            url = SQLSecurityGuard.safe_build_db_url(dialect, decrypted)
+            engine = create_engine(url)
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT customer_id FROM bvn_records WHERE bvn = :bvn LIMIT 1"),
+                    {"bvn": bvn}
+                ).fetchone()
+                if row and row[0] is not None:
+                    return int(row[0])
+        except Exception as e:
+            logger.warning(f"[DYNAMIC SQL] Failed cross-database BVN resolution: {e}")
+        return None
 
     def execute_stream(
         self,
@@ -278,14 +341,44 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 "status": "completed"
             })
 
-            # Injected Context Bindings from SessionWorkingMemory
+            # Injected Context Bindings from SessionWorkingMemory & Cross-Engine Bridge
             working_memory = kwargs.get("working_memory")
             query_with_bindings = query
-            if working_memory and getattr(working_memory, "active_entities", None):
+            bindings = []
+
+            # Cross-database Identity Bridge:
+            # If target database is domain-isolated (noros_lending_db or noros_core_banking_db)
+            # and customer_id is not yet bound, resolve customer_id from BVN via noros_customer_db
+            if job.name in ("noros_lending_db", "noros_core_banking_db"):
+                has_cid = working_memory and "customer_id" in working_memory.active_entities
+                if not has_cid:
+                    bvn_cand = (working_memory.active_entities.get("bvn") if working_memory else None)
+                    if not bvn_cand:
+                        bvn_m = re.search(r"\b(\d{11})\b", query)
+                        if bvn_m:
+                            bvn_cand = bvn_m.group(1)
+                    if bvn_cand:
+                        resolved_cid = self._resolve_customer_id_by_bvn(bvn_cand, user_context, db)
+                        if resolved_cid:
+                            if working_memory:
+                                working_memory.active_entities["customer_id"] = resolved_cid
+                                working_memory.primary_anchor_id = resolved_cid
+                            else:
+                                bindings.append(f"customer_id = {resolved_cid}")
+                            logger.info(f"[DYNAMIC SQL] Cross-engine identity bridge: resolved BVN {bvn_cand} to customer_id {resolved_cid}")
+
+            if working_memory:
                 if getattr(working_memory, "scope", None) not in (EntityScope.AGGREGATE.value, EntityScope.SYSTEM_META.value):
-                    bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items()) + "]"
-                    query_with_bindings = query + bindings_str
-                    logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
+                    if getattr(working_memory, "active_entities", None):
+                        bindings.extend(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items())
+                    if getattr(working_memory, "collection_ids", None) and getattr(working_memory, "scope", None) == EntityScope.COLLECTION.value:
+                        cids_str = ", ".join(str(c) for c in working_memory.collection_ids)
+                        bindings.append(f"customer_id IN ({cids_str})")
+
+            if bindings:
+                bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(bindings) + "]"
+                query_with_bindings = query + bindings_str
+                logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
 
             # 3. Dynamic SQL Agent Generation & Read-Only Execution
             yield ("status", {
@@ -410,18 +503,67 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
                 yield ("result", (full_answer, sources, True, 0.95))
             else:
-                logger.warning(f"[DYNAMIC SQL] Execution failed: {sql_result.get('error')}. Falling back.")
+                raw_err = sql_result.get('error', 'Execution error')
+                logger.warning(f"[DYNAMIC SQL] Execution failed: {raw_err}.")
+                
+                # Check if this was a cross-database query (e.g. transaction volume in core banking + loans in lending)
+                lower_q = query.lower()
+                is_cross_db = (
+                    any(k in lower_q for k in ["transaction", "transactions", "inflow", "deposit"]) and
+                    any(k in lower_q for k in ["loan", "loans", "facility", "facilities", "credit"])
+                )
+                
+                if is_cross_db:
+                    error_details = (
+                        "The requested inquiry spans two isolated database systems:\n"
+                        "- **Transaction activity and account balances** reside in the Core Banking database (`noros_core_banking_db`).\n"
+                        "- **Loan portfolios and credit facilities** reside in the Lending database (`noros_lending_db`).\n\n"
+                        "Because these systems run on disparate database engines, they cannot be joined directly in a single SQL query. "
+                        "Please query each system individually (for example, first request active loans from the lending system, then inspect 12-month transaction volumes for those specific accounts)."
+                    )
+                else:
+                    error_details = (
+                        f"I encountered a database execution issue while querying **{job.name}** ({dialect.upper()}): {raw_err}. "
+                        "The requested data could not be retrieved from the relational schema."
+                    )
+
                 yield ("status", {
                     "step": "sql_execution",
                     "stage": "sql",
-                    "title": "SQL Execution Failed",
-                    "details": f"Query error: {sql_result.get('error')}. Falling back to document RAG.",
+                    "title": "SQL Execution Error",
+                    "details": f"Query error: {raw_err}",
                     "status": "failed"
                 })
-                yield ("result", None)
+
+                yield ("delta", {"content": error_details})
+
+                sources = [{
+                    "source_name": f"{job.name} ({dialect.upper()} Database)",
+                    "filename": f"{job.name} ({dialect.upper()})",
+                    "chunk_id": "sql_error",
+                    "sql_query": sql_result.get("sql", ""),
+                    "row_count": 0,
+                    "relevance_score": 0.0,
+                    "preview": f"Database execution error: {raw_err}",
+                    "error": True,
+                    "database_name": job.name
+                }]
+                yield ("result", (error_details, sources, False, 0.0))
         except Exception as e:
-            logger.warning(f"[DYNAMIC SQL] Error: {e}. Falling back.")
-            yield ("result", None)
+            logger.warning(f"[DYNAMIC SQL] Exception in execute_stream: {e}.")
+            err_text = f"An error occurred while executing the database query against the relational system: {e}"
+            yield ("delta", {"content": err_text})
+            sources = [{
+                "source_name": "Relational Database Engine",
+                "filename": "database_error",
+                "chunk_id": "sql_exception",
+                "sql_query": "",
+                "row_count": 0,
+                "relevance_score": 0.0,
+                "preview": str(e),
+                "error": True
+            }]
+            yield ("result", (err_text, sources, False, 0.0))
 
     def execute(
         self,
