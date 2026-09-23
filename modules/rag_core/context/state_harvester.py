@@ -56,18 +56,39 @@ class StateHarvester:
         if target_db:
             memory.last_target_database = target_db
 
-        is_multi_row = len(rows) > 1
-        if is_multi_row:
+        distinct_customers = {
+            row.get("customer_id") for row in rows 
+            if isinstance(row, dict) and row.get("customer_id") is not None
+        }
+        distinct_names = {
+            f"{row.get('first_name', '')} {row.get('last_name', '')}".strip() 
+            for row in rows 
+            if isinstance(row, dict) and (row.get('first_name') or row.get('last_name'))
+        }
+        distinct_names.discard("")
+
+        is_multi_customer = len(distinct_customers) > 1 or len(distinct_names) > 1
+        
+        if is_multi_customer:
             memory.scope = EntityScope.COLLECTION.value
         elif len(rows) == 1:
             memory.scope = EntityScope.INDIVIDUAL.value
+        elif len(rows) > 1:
+            # Multi-row result for a single customer (e.g., transaction ledger or accounts)
+            if len(distinct_customers) == 1 or memory.primary_anchor_id or "customer_id" in memory.active_entities:
+                memory.scope = EntityScope.INDIVIDUAL.value
+            else:
+                memory.scope = EntityScope.COLLECTION.value
+
+        is_multi_row = len(rows) > 1
+        is_collection = memory.scope == EntityScope.COLLECTION.value
 
         for row in rows[:10]:
             if not isinstance(row, dict):
                 continue
 
-            # Check entity IDs - only bind singular customer/account ID if single row
-            if not is_multi_row:
+            # Check entity IDs - bind singular customer/account ID if not a multi-customer collection
+            if not is_collection:
                 for field in cls.KEY_ENTITY_FIELDS:
                     if field in row and row[field] is not None:
                         memory.active_entities[field] = row[field]
@@ -102,8 +123,8 @@ class StateHarvester:
             if bvn_match and "bvn" not in memory.active_entities:
                 memory.active_entities["bvn"] = bvn_match.group(1)
 
-            # Explicit customer_id pattern in query or answer (only for single row / individual inquiry)
-            if not is_multi_row:
+            # Explicit customer_id pattern in query or answer (only for individual inquiry)
+            if not is_collection:
                 cid_match = re.search(r"(?:customer[_\s]?id|id)\s*[:=]\s*(\d+)", query + " " + answer, re.IGNORECASE)
                 if cid_match and "customer_id" not in memory.active_entities:
                     try:

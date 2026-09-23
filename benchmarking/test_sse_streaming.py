@@ -62,6 +62,7 @@ def test_sse_stream_query(query: str, session_id: str, token: str):
 
     status_events = []
     delta_tokens = []
+    actions_events = []
     metadata_event = None
 
     current_event = None
@@ -78,6 +79,9 @@ def test_sse_stream_query(query: str, session_id: str, token: str):
                 status_events.append(data)
                 status_icon = "✓" if data.get("status") == "completed" else "..."
                 print(f"  [STATUS] [{data.get('stage', 'pipeline').upper()}] {status_icon} {data.get('title')}: {data.get('details')}")
+            elif current_event == "actions":
+                actions_events.append(data)
+                print(f"  [ACTIONS] Received {len(data.get('actions', []))} suggested actions: {[a.get('label') for a in data.get('actions', [])]}")
             elif current_event == "delta":
                 token_text = data.get("content", "")
                 delta_tokens.append(token_text)
@@ -92,6 +96,7 @@ def test_sse_stream_query(query: str, session_id: str, token: str):
 
     print(f"\nStream Completed in {total_time:.2f}s")
     print(f"Status Events Received: {len(status_events)}")
+    print(f"Actions Events Received: {len(actions_events)}")
     print(f"Tokens Streamed: {len(delta_tokens)} (Length: {len(full_answer)} chars)")
     print(f"Metadata Event Received: {metadata_event is not None}")
 
@@ -104,6 +109,8 @@ def test_sse_stream_query(query: str, session_id: str, token: str):
     assert metadata_event is not None, "Expected final metadata event"
     assert "sources" in metadata_event, "Metadata event must contain sources"
     assert "latency_ms" in metadata_event, "Metadata event must contain latency_ms"
+    assert "suggested_actions" in metadata_event, "Metadata event must contain suggested_actions"
+    assert len(actions_events) >= 1, "Expected at least 1 actions event in stream"
 
     print("✓ SSE Streaming Validation PASSED!")
     return full_answer, status_events, metadata_event
@@ -132,8 +139,10 @@ def test_sync_fallback(query: str, session_id: str, token: str):
     assert data.get("status") == "success", f"Status not success: {data}"
     assert "answer" in data and len(data["answer"].strip()) > 0, "Empty answer"
     assert "sources" in data, "Sources missing"
+    assert "suggested_actions" in data, "Suggested actions missing from synchronous response"
     print(f"Answer: {data['answer'][:150]}...")
     print(f"Sources: {len(data.get('sources', []))}")
+    print(f"Suggested Actions: {len(data.get('suggested_actions', []))} -> {[a.get('label') for a in data.get('suggested_actions', [])]}")
     print("✓ Synchronous Fallback Validation PASSED!")
 
 if __name__ == "__main__":

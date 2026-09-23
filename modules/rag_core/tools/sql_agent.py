@@ -27,18 +27,21 @@ class DynamicSQLAgent:
         "2. Use ONLY tables and columns provided in the Schema Context below.\\n"
         "3. Match the specific SQL dialect syntax (e.g. PostgreSQL, MySQL, Oracle, MSSQL).\\n"
         "4. For date filtering or string matching, use dialect-standard functions (e.g. ILIKE for PostgreSQL/MySQL, LIKE for Oracle/MSSQL).\\n"
-        "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle). When an inquiry asks for transaction activity or asks for BOTH a total/aggregate metric (e.g. total inflow, sum) AND an extreme (e.g. largest credit deposit), do NOT limit to 1 row; either compute the aggregates (e.g. SUM, MAX, COUNT) or SELECT all qualifying transactions up to LIMIT 50 so that both totals and specifics are available.\\n"
+        "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle). When an inquiry asks for transaction activity, ledger history, or both summary metrics (e.g. total inflow, largest deposit) and transactions, SELECT the qualifying transaction detail rows (e.g. SELECT transaction_id, transaction_date, transaction_type, direction, amount, currency, description FROM account_transactions WHERE account_id = ... ORDER BY transaction_date DESC LIMIT 50). Returning all recent qualifying transaction records allows the downstream analyst to calculate totals, largest transactions, and analyze patterns accurately.\\n"
         "6. For entity lookup questions (e.g. 'Who is the customer...', 'Find customer...', 'Check account...'), SELECT relevant descriptive attributes (such as first_name, last_name, customer_type, verification_status, name) alongside IDs so the inquiry can be fully answered.\\n"
         "7. If [CONTEXT BINDINGS] are provided in the inquiry (e.g. customer_id = 1008, account_number = '0123456708'), use those explicit primary or foreign key values in your WHERE / JOIN clauses to locate the exact records.\\n"
         "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary.\\n"
         "9. SCHEMA SEMANTICS & VALUE PROFILING: Inspect table column definitions, database comments, and '-- Sample Column Values' annotations in the Schema Context to accurately disambiguate entity concepts:\\n"
-        "   - When querying organizations, companies, employers, or client corporate affiliations, identify and match against columns whose sample values contain enterprise/corporate names (distinct from personal occupations or individual professions).\\n"
-        "   - When asked for distinct organizations, companies, or industries, use SELECT DISTINCT on the corporate affiliation column and apply exclusion filters (e.g. WHERE <col> NOT ILIKE '%<excluded_name>%') against that same column.\\n"
+        "   - When querying organizations, companies, employers, corporate clients, or industries/sectors, identify and match against columns whose sample values contain enterprise/corporate company names (e.g. 'employer' containing company names like 'Julius Berger', 'Unilever', distinct from personal 'occupation' job titles and internal classification codes like 'customer_segment').\\n"
+        "   - When asked for other/distinct organizations, companies, employers, or industries (e.g. 'Apart from X, which other industries/companies...'), use SELECT DISTINCT directly on that corporate employer column with exclusion filters (e.g. SELECT DISTINCT employer FROM customers WHERE employer NOT ILIKE '%<excluded>%' AND employer IS NOT NULL). NEVER query codes or internal segments (like customer_segment) when asked about industries or companies.\\n"
+        "   - NEVER use scalar comparisons (=, !=) with subqueries that may return multiple rows; use NOT ILIKE directly or NOT IN (SELECT ...).\\n"
         "   - Use personal occupation/job title columns ONLY when the user explicitly inquires about professions, roles, or job titles.\\n"
         "10. SQL SYNTAX & QUERY FORMULATION:\\n"
         "   - Query the primary table directly (e.g. SELECT ... FROM accounts WHERE customer_id = ...) without creating unnecessary UNION statements with other tables.\\n"
-        "   - In queries with UNION / UNION ALL, any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number')."
+        "   - In queries with UNION / UNION ALL, any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number').\\n"
+        "11. AGGREGATES VS DETAIL ROWS: NEVER mix aggregate functions (SUM, AVG, COUNT, MAX, MIN) with unaggregated individual detail columns in the same SELECT statement without a GROUP BY clause, as this causes database syntax/grouping errors."
     )
+
 
     @classmethod
     def clean_sql_output(cls, raw_text: str) -> str:

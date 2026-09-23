@@ -53,6 +53,7 @@ def execute_chat_query(
             final_sources = []
             is_grounded = True
             confidence = 1.0
+            accumulated_actions = []
 
             try:
                 for event_type, data in orchestrator.execute_unified_query_stream(
@@ -69,10 +70,14 @@ def execute_chat_query(
                 ):
                     if event_type == "delta":
                         accumulated_answer += data.get("content", "")
+                    elif event_type == "actions":
+                        accumulated_actions = data.get("actions", [])
                     elif event_type == "metadata":
                         final_sources = data.get("sources", [])
                         is_grounded = data.get("is_grounded", True)
                         confidence = data.get("confidence", 1.0)
+                        if not accumulated_actions:
+                            accumulated_actions = data.get("suggested_actions", [])
                         data["session_title"] = active_session_title
 
                     json_data = json.dumps(data)
@@ -87,7 +92,8 @@ def execute_chat_query(
                     citation_metadata={
                         "sources": final_sources,
                         "is_grounded": is_grounded,
-                        "confidence": confidence
+                        "confidence": confidence,
+                        "suggested_actions": accumulated_actions
                     }
                 )
             except Exception as e:
@@ -115,7 +121,7 @@ def execute_chat_query(
         )
 
     # Synchronous Execution
-    answer, sources, is_grounded, confidence = orchestrator.execute_unified_query(
+    answer, sources, is_grounded, confidence, actions = orchestrator.execute_unified_query(
         query=payload.query,
         user_context=user_context,
         db=db,
@@ -125,7 +131,8 @@ def execute_chat_query(
         template_id=payload.template_id,
         top_k=payload.top_k,
         score_threshold=payload.score_threshold,
-        mode=payload.mode or "auto"
+        mode=payload.mode or "auto",
+        return_actions=True
     )
 
     ChatRepository.add_message(
@@ -133,7 +140,12 @@ def execute_chat_query(
         session_id=session.id,
         role="assistant",
         content=answer,
-        citation_metadata={"sources": sources, "is_grounded": is_grounded, "confidence": confidence}
+        citation_metadata={
+            "sources": sources,
+            "is_grounded": is_grounded,
+            "confidence": confidence,
+            "suggested_actions": actions
+        }
     )
 
     formatted_sources = [
@@ -157,7 +169,8 @@ def execute_chat_query(
         answer=answer,
         sources=formatted_sources,
         is_grounded=is_grounded,
-        grounding_confidence=confidence
+        grounding_confidence=confidence,
+        suggested_actions=actions
     )
 
 

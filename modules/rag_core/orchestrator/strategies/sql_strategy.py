@@ -15,6 +15,7 @@ from modules.rag_core.tools.sql_agent import DynamicSQLAgent
 from modules.rag_core.providers.llm import BaseLLMService
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.orchestrator.strategies.base import BaseRetrievalStrategy
+from modules.rag_core.context.models import EntityScope
 
 logger = logging.getLogger("sql_strategy")
 
@@ -281,9 +282,10 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             working_memory = kwargs.get("working_memory")
             query_with_bindings = query
             if working_memory and getattr(working_memory, "active_entities", None):
-                bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items()) + "]"
-                query_with_bindings = query + bindings_str
-                logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
+                if getattr(working_memory, "scope", None) not in (EntityScope.AGGREGATE.value, EntityScope.SYSTEM_META.value):
+                    bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items()) + "]"
+                    query_with_bindings = query + bindings_str
+                    logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
 
             # 3. Dynamic SQL Agent Generation & Read-Only Execution
             yield ("status", {
@@ -328,16 +330,26 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     for r in rows[:15]:
                         row_vals = [str(r.get(c, "N/A")) for c in cols]
                         md_table_lines.append("| " + " | ".join(row_vals) + " |")
-                    table_summary = f"\n\n**Database Query Results:**\n\n" + "\n".join(md_table_lines)
+                    data_representation = "\n".join(md_table_lines)
                 else:
-                    table_summary = "\n\n*The database query returned 0 matching records.*"
+                    data_representation = "The database query returned 0 matching records."
+
+                table_requested = any(kw in query.lower() for kw in ["table", "tabular", "in a table", "as a table", "grid"])
+                format_directive = (
+                    "Format your response using a clean Markdown table since the user explicitly requested tabular format."
+                    if table_requested else
+                    "Deliver a direct, fluent, and well-structured answer in natural language with clear bullet points where appropriate. "
+                    "Do NOT dump or append raw database tables or column matrices."
+                )
 
                 synthesis_prompt = (
                     f"User Inquiry: {query}\n"
                     f"Executed SQL: {executed_sql}\n"
-                    f"Result Data:\n{table_summary}\n\n"
-                    f"Provide a clear, direct, and professional answer to the user's inquiry based on this query result. "
-                    f"State the exact customer name, identifier, or values retrieved."
+                    f"Database Query Results ({len(rows)} matching records):\n{data_representation}\n\n"
+                    f"Directives:\n"
+                    f"- {format_directive}\n"
+                    f"- Clearly state the exact customer names, identifiers, metrics, and pertinent attributes retrieved.\n"
+                    f"- Be concise, direct, and professional without unnecessary boilerplate."
                 )
 
                 yield ("status", {
@@ -352,20 +364,18 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 if hasattr(self.llm, "stream_text"):
                     for token in self.llm.stream_text(
                         synthesis_prompt,
-                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}. Provide clear, professional, and accurate answers directly answering the user inquiry based on the database records."
                     ):
                         answer += token
                         yield ("delta", {"content": token})
                 else:
                     answer = self.llm.generate_text(
                         synthesis_prompt,
-                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}. Provide clear, professional, and accurate answers directly answering the user inquiry based on the database records."
                     )
                     yield ("delta", {"content": answer})
 
-                # Yield table summary markdown
-                yield ("delta", {"content": table_summary})
-                full_answer = f"{answer}\n{table_summary}"
+                full_answer = answer.strip()
 
                 yield ("status", {
                     "step": "synthesis",
@@ -374,6 +384,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     "details": "Synthesis completed successfully.",
                     "status": "completed"
                 })
+
 
                 sources = [{
                     "source_name": f"{job.name} ({dialect.upper()} Database)",

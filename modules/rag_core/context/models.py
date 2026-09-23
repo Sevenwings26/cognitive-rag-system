@@ -3,6 +3,24 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional
 from enum import Enum
 import json
+from pydantic import BaseModel, Field
+
+class ActionType(str, Enum):
+    """Categorization for proactive next best actions."""
+    PROMPT_SUGGESTION = "PROMPT_SUGGESTION"   # User-facing prompt suggestion
+    WORKFLOW_STEP = "WORKFLOW_STEP"           # Progressive next stage in business workflow
+    CLARIFICATION = "CLARIFICATION"           # Disambiguation prompt when uncertainty exists
+
+class SuggestedAction(BaseModel):
+    """
+    Structured Next Best Action proposed by the proactive cognition engine.
+    """
+    label: str = Field(..., description="Short button/chip title for the action UI")
+    suggested_prompt: str = Field(..., description="The executable canonical prompt triggered when selected")
+    conversational_prompt: Optional[str] = Field(None, description="Natural, conversational consultative phrasing")
+    action_type: ActionType = Field(default=ActionType.PROMPT_SUGGESTION, description="Action category")
+    target_strategy: Optional[str] = Field(None, description="Expected strategy route e.g. 'sql', 'enterprise'")
+    confidence: float = Field(default=1.0, description="Heuristic or model confidence score (0.0 - 1.0)")
 
 class EntityScope(str, Enum):
     """Conversation scope levels governing context injection and entity eviction."""
@@ -29,6 +47,7 @@ class SessionWorkingMemory:
     scope: str = EntityScope.INDIVIDUAL.value                         # Current conversational entity scope
     active_topic: Optional[str] = None                               # Topic indicator (e.g. "customer_kyc", "employers")
     primary_anchor_id: Optional[Any] = None                           # Singular anchor ID to avoid multi-row overwrite drift
+    suggested_actions: List[Dict[str, Any]] = field(default_factory=list) # Proactive next best actions
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -46,7 +65,8 @@ class SessionWorkingMemory:
             turn_count=data.get("turn_count", 0),
             scope=data.get("scope", EntityScope.INDIVIDUAL.value),
             active_topic=data.get("active_topic"),
-            primary_anchor_id=data.get("primary_anchor_id")
+            primary_anchor_id=data.get("primary_anchor_id"),
+            suggested_actions=data.get("suggested_actions") or []
         )
 
     def to_json(self) -> str:
@@ -67,13 +87,8 @@ class SessionWorkingMemory:
         self.scope = new_scope.value if isinstance(new_scope, EntityScope) else str(new_scope)
         if new_scope in (EntityScope.AGGREGATE, EntityScope.SYSTEM_META):
             # Suppress individual ID anchors to avoid Frankenstein entity binds
-            self.active_entities.pop("customer_id", None)
-            self.active_entities.pop("bvn", None)
-            self.active_entities.pop("nin", None)
-            self.active_entities.pop("account_id", None)
-            self.active_entities.pop("account_number", None)
-            self.active_entities.pop("loan_id", None)
-            self.active_names = []
+            self.active_entities.clear()
+            self.active_names.clear()
             self.primary_anchor_id = None
 
     def get_summary_context(self, target_scope: Optional[EntityScope] = None) -> str:

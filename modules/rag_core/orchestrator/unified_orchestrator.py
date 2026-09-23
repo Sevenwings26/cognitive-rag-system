@@ -2,7 +2,7 @@
 import uuid
 import logging
 import time
-from typing import List, Dict, Any, Optional, Tuple, Iterator
+from typing import List, Dict, Any, Optional, Tuple, Iterator, Union
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -37,7 +37,9 @@ from modules.rag_core.context import (
     SessionWorkingMemory,
     SessionContextManager,
     QueryCondenser,
-    StateHarvester
+    StateHarvester,
+    ActionProposer,
+    SuggestedAction
 )
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
@@ -313,7 +315,42 @@ class UnifiedRAGOrchestrator:
             sources=sources,
             extra_meta=extra_meta
         )
+
+        # =========================================================================
+        # [FEATURE FLAG / OPTIONAL]: Proactive Agent Cognition (ActionProposer)
+        # -------------------------------------------------------------------------
+        # Currently disabled per user request.
+        # To re-enable in the future:
+        #   1. Uncomment the lines below.
+        #   2. Remove or comment out 'actions_payload = []'.
+        # =========================================================================
+        actions_payload = []
+        # suggested_actions = ActionProposer.propose_actions(
+        #     memory=updated_memory,
+        #     query=condensed_query,
+        #     answer=answer,
+        #     strategy_used=strategy_used,
+        #     llm_service=self.llm
+        # )
+        # actions_payload = [
+        #     a.model_dump() if hasattr(a, "model_dump") else a for a in suggested_actions
+        # ]
+        # updated_memory.suggested_actions = actions_payload
+        #
+        # # Embed consultative follow-up recommendations directly into the assistant's Markdown response
+        # recommendations_block = ActionProposer.format_embedded_recommendations(suggested_actions)
+        # if recommendations_block:
+        #     yield ("delta", {"content": recommendations_block})
+        #     answer = f"{answer.rstrip()}{recommendations_block}"
+        # =========================================================================
+
         SessionContextManager.save_memory(updated_memory)
+
+        # Emit typed SSE actions event immediately after execution
+        yield ("actions", {
+            "actions": actions_payload,
+            "session_id": session_id
+        })
 
         # Remove internal raw rows from public source objects so they don't bloat citation_metadata
         if strategy_used == "sql" and sources:
@@ -328,7 +365,8 @@ class UnifiedRAGOrchestrator:
             "session_id": session_id,
             "is_grounded": is_grounded,
             "confidence": confidence,
-            "strategy_used": strategy_used
+            "strategy_used": strategy_used,
+            "suggested_actions": actions_payload
         })
 
     def execute_unified_query(
@@ -342,13 +380,19 @@ class UnifiedRAGOrchestrator:
         template_id: Optional[str] = None,
         top_k: int = 3,
         score_threshold: float = 0.35,
-        mode: str = "auto"
-    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
-        """Synchronous wrapper consuming execute_unified_query_stream for backward compatibility."""
+        mode: str = "auto",
+        return_actions: bool = False
+    ) -> Union[Tuple[str, List[Dict[str, Any]], bool, float], Tuple[str, List[Dict[str, Any]], bool, float, List[Dict[str, Any]]]]:
+        """
+        Synchronous wrapper consuming execute_unified_query_stream.
+        Maintains 100% backward compatibility by returning a 4-tuple by default,
+        or a 5-tuple with suggested_actions when return_actions=True.
+        """
         accumulated_answer = ""
         final_sources = []
         is_grounded = True
         confidence = 1.0
+        final_actions: List[Dict[str, Any]] = []
 
         for event_type, payload in self.execute_unified_query_stream(
             query=query,
@@ -364,11 +408,19 @@ class UnifiedRAGOrchestrator:
         ):
             if event_type == "delta":
                 accumulated_answer += payload.get("content", "")
+            elif event_type == "actions":
+                final_actions = payload.get("actions", [])
             elif event_type == "metadata":
                 final_sources = payload.get("sources", [])
                 is_grounded = payload.get("is_grounded", True)
                 confidence = payload.get("confidence", 1.0)
+                if not final_actions:
+                    final_actions = payload.get("suggested_actions", [])
 
+        self.last_suggested_actions = final_actions
+
+        if return_actions:
+            return accumulated_answer, final_sources, is_grounded, confidence, final_actions
         return accumulated_answer, final_sources, is_grounded, confidence
 
 
