@@ -2,20 +2,31 @@
 
 import logging
 from typing import Optional
-import redis
+
+try:
+    import redis
+    _HAS_REDIS = True
+except ImportError:
+    redis = None
+    _HAS_REDIS = False
+
 from core.config import settings
 
 logger = logging.getLogger("core.redis_client")
 
-_REDIS_CLIENT: Optional[redis.Redis] = None
+_REDIS_CLIENT = None
 _REDIS_CHECKED: bool = False
 
 
-def get_redis() -> Optional[redis.Redis]:
+def get_redis():
     """Return an authoritative Redis client or None if Redis is unreachable."""
     global _REDIS_CLIENT, _REDIS_CHECKED
     if _REDIS_CHECKED:
         return _REDIS_CLIENT
+
+    if not _HAS_REDIS:
+        _REDIS_CHECKED = True
+        return None
 
     redis_url = getattr(settings, "REDIS_URL", "redis://redis:6379/0")
     if not redis_url:

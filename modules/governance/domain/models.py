@@ -151,3 +151,58 @@ class ChatMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("ChatSession", back_populates="messages")
+
+
+class DatabaseSemanticProfile(Base):
+    """
+    Persisted structural schema profile, entity keys, and domain tags for an IngestionJob database.
+    """
+    __tablename__ = "database_semantic_profiles"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    job_id = Column(String(36), ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    database_name = Column(String(100), nullable=False)
+    dialect = Column(String(50), nullable=True)
+    domain_tags = Column(JSON, nullable=False, default=dict)       # {"primary": [...], "secondary": [...]}
+    table_profiles = Column(JSON, nullable=False, default=dict)    # Serialized TableProfiles
+    all_entity_keys = Column(JSON, nullable=False, default=list)   # Aggregated entity identifiers
+    all_metric_keys = Column(JSON, nullable=False, default=list)   # Aggregated metric/amount columns
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_db_semantic_profiles_org_db", "org_id", "database_name"),
+    )
+
+
+class DocumentSourceProfileModel(Base):
+    """
+    Persisted taxonomy profile for cloud storage sources (S3, SharePoint, Google Drive) and document repositories.
+    """
+    __tablename__ = "document_source_profiles"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    job_id = Column(String(36), ForeignKey("ingestion_jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False)               # S3, SHAREPOINT, GOOGLE_DRIVE, etc.
+    source_name = Column(String(100), nullable=False)
+    container_names = Column(JSON, nullable=False, default=list)   # Buckets, libraries, folder roots
+    topic_tags = Column(JSON, nullable=False, default=list)
+    file_types = Column(JSON, nullable=False, default=list)
+    entity_keys = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TenantDomainCatalogModel(Base):
+    """
+    Top-level tenant domain configuration, vertical type, and global synonyms.
+    """
+    __tablename__ = "tenant_domain_catalogs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    domain_vertical = Column(String(50), nullable=False, default="GENERIC") # BANKING, TELECOM, HEALTHCARE, etc.
+    universal_synonyms = Column(JSON, nullable=False, default=dict)
+    global_regex_patterns = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

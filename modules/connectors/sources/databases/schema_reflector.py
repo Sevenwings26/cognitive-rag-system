@@ -9,6 +9,8 @@ from modules.connectors.base import RawDocument
 from modules.connectors.security.sql_guard import (
     SQLSecurityGuard, DatabaseSecurityTargetError
 )
+from modules.connectors.sources.databases.profiler_rules import StructuralSchemaProfiler
+from modules.governance.domain.catalog_models import DatabaseProfile, TableProfile, ColumnProfile, ColumnSemanticRole
 
 logger = logging.getLogger("schema_reflector")
 
@@ -90,6 +92,24 @@ class DatabaseSchemaReflector:
                 except Exception as sample_err:
                     logger.debug(f"[SCHEMA REFLECTOR] Value sampling skipped for {short_name}: {sample_err}")
 
+                fk_cols = {fk.parent.name for fk in table.foreign_keys}
+                column_roles = {}
+                entity_keys = []
+                metric_keys = []
+
+                for c in table.columns:
+                    role = StructuralSchemaProfiler.infer_column_role(
+                        column_name=c.name,
+                        sql_type=str(c.type),
+                        is_pk=(c.name in pks),
+                        is_fk=(c.name in fk_cols)
+                    )
+                    column_roles[c.name] = role.value
+                    if role == ColumnSemanticRole.ENTITY_IDENTIFIER:
+                        entity_keys.append(c.name)
+                    elif role == ColumnSemanticRole.METRIC_QUANTITATIVE:
+                        metric_keys.append(c.name)
+
                 reflected_tables.append({
                     "table_name": short_name,
                     "full_table_name": table_name,
@@ -99,6 +119,9 @@ class DatabaseSchemaReflector:
                     "foreign_keys": fks,
                     "columns": columns,
                     "column_names": [c["name"] for c in columns],
+                    "column_roles": column_roles,
+                    "entity_keys": entity_keys,
+                    "metric_keys": metric_keys,
                     "column_samples": column_samples
                 })
 
@@ -152,6 +175,9 @@ class DatabaseSchemaReflector:
                 "dialect": dialect,
                 "source_type": source_type,
                 "column_names": tbl["column_names"],
+                "column_roles": tbl.get("column_roles", {}),
+                "entity_keys": tbl.get("entity_keys", []),
+                "metric_keys": tbl.get("metric_keys", []),
                 "primary_keys": tbl["primary_keys"],
                 "foreign_keys": tbl["foreign_keys"]
             }
@@ -166,3 +192,71 @@ class DatabaseSchemaReflector:
             ))
 
         return schema_docs
+
+    @classmethod
+    def build_database_profile(
+        cls,
+        reflected_tables: List[Dict[str, Any]],
+        job_id: str,
+        db_name: str,
+        dialect: str,
+        domain_tags: Optional[Dict[str, List[str]]] = None
+    ) -> DatabaseProfile:
+        """
+        Constructs a structured DatabaseProfile Pydantic model from reflected tables.
+        """
+        table_profiles: Dict[str, TableProfile] = {}
+        all_entity_keys: List[str] = []
+        all_metric_keys: List[str] = []
+
+        for tbl in reflected_tables:
+            tname = tbl["table_name"]
+            pks = tbl.get("primary_keys", [])
+            fks = tbl.get("foreign_keys", [])
+            ent_keys = tbl.get("entity_keys", [])
+            met_keys = tbl.get("metric_keys", [])
+
+            all_entity_keys.extend(ent_keys)
+            all_metric_keys.extend(met_keys)
+
+            columns_dict: Dict[str, ColumnProfile] = {}
+            for col in tbl.get("columns", []):
+                cname = col["name"]
+                ctype = col["type"]
+                crole = tbl.get("column_roles", {}).get(cname, ColumnSemanticRole.DESCRIPTIVE.value)
+                samples = tbl.get("column_samples", {}).get(cname, [])
+
+                columns_dict[cname] = ColumnProfile(
+                    name=cname,
+                    role=ColumnSemanticRole(crole),
+                    data_type=ctype,
+                    is_primary_key=(cname in pks),
+                    is_foreign_key=any(f.startswith(f"{cname} ->") for f in fks),
+                    samples=samples
+                )
+
+            table_profiles[tname] = TableProfile(
+                table_name=tname,
+                schema_name=tbl.get("schema"),
+                primary_entity_keys=ent_keys,
+                metric_keys=met_keys,
+                semantic_tags=[tname] + ent_keys[:3],
+                columns=columns_dict
+            )
+
+        # Deduplicate while preserving order
+        unique_entity_keys = list(dict.fromkeys(all_entity_keys))
+        unique_metric_keys = list(dict.fromkeys(all_metric_keys))
+
+        tags = domain_tags or {"primary": [db_name] + list(table_profiles.keys()), "secondary": []}
+
+        return DatabaseProfile(
+            job_id=job_id,
+            database_name=db_name,
+            dialect=dialect,
+            domain_tags=tags,
+            tables=table_profiles,
+            all_entity_keys=unique_entity_keys,
+            all_metric_keys=unique_metric_keys
+        )
+

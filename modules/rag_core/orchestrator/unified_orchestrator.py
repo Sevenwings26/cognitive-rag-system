@@ -41,6 +41,7 @@ from modules.rag_core.context import (
     ActionProposer,
     SuggestedAction
 )
+from modules.rag_core.catalog.manager import CatalogManager
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
 
@@ -319,12 +320,16 @@ class UnifiedRAGOrchestrator:
             extra_meta["rows"] = first_src.get("rows", [])
             extra_meta["database_name"] = first_src.get("database_name")
 
+        catalog = CatalogManager.get_tenant_catalog(user_context.org_id, db=db) if user_context else None
+
         updated_memory = StateHarvester.harvest(
             memory=working_memory,
             strategy_name=strategy_used,
             query=condensed_query,
             answer=answer,
             sources=sources,
+            catalog=catalog,
+            org_id=user_context.org_id if user_context else None,
             extra_meta=extra_meta
         )
 

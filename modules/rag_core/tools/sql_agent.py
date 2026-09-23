@@ -52,8 +52,13 @@ class DynamicSQLAgent:
         """Strips markdown code blocks, backticks, and extraneous whitespace from LLM output."""
         cleaned = raw_text.strip()
         if "```" in cleaned:
-            cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
+            # Extract content inside markdown code block if present to isolate SQL from trailing commentary
+            match = re.search(r"```(?:sql)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
+            if match:
+                cleaned = match.group(1).strip()
+            else:
+                cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
         cleaned = cleaned.strip().rstrip(";")
 
         # Strip table aliases from ORDER BY in UNION queries (standard SQL requirement)

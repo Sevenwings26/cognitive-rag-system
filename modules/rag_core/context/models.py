@@ -37,18 +37,21 @@ class SessionWorkingMemory:
     across all modalities (SQL, Enterprise RAG, and Scoped Session Documents).
     """
     session_id: str
-    active_entities: Dict[str, Any] = field(default_factory=dict)     # e.g. {"customer_id": 1008, "bvn": "90000001008", ...}
-    active_names: List[str] = field(default_factory=list)             # e.g. ["Adebayo Adekunle"]
-    active_documents: List[str] = field(default_factory=list)         # e.g. ["expense_policy.docx"]
-    active_vendors: List[str] = field(default_factory=list)           # e.g. ["MTN Business Solutions", "Slot NG"]
-    active_metrics: Dict[str, Any] = field(default_factory=dict)      # e.g. {"balance": "88450000.00", "interest_rate": "13.00"}
-    last_target_database: Optional[str] = None                        # e.g. "noros_customer_db", "noros_core_banking_db"
+    active_entities: Dict[str, Any] = field(default_factory=dict)     # e.g. {"msisdn": "...", "patient_mrn": "...", "customer_id": ...}
+    active_names: List[str] = field(default_factory=list)             # e.g. ["Adebayo Adekunle", "Dr. Gregory House"]
+    active_documents: List[str] = field(default_factory=list)         # e.g. ["expense_policy.docx", "patient_history.pdf"]
+    active_cloud_sources: List[str] = field(default_factory=list)     # e.g. ["s3://telecom-cdr", "sharepoint://clinical-trials"]
+    active_vendors: List[str] = field(default_factory=list)           # Referenced external vendors / partners (backward compatibility)
+    active_external_entities: List[str] = field(default_factory=list) # Generalized external entities (vendors, facilities, carriers)
+    active_metrics: Dict[str, Any] = field(default_factory=dict)      # e.g. {"balance": "88450000.00", "latency_ms": "12.4"}
+    active_tables: List[str] = field(default_factory=list)            # Relational tables touched in conversation
+    last_target_database: Optional[str] = None                        # e.g. "ehr_db", "cdr_db", "noros_customer_db"
     last_strategy: Optional[str] = None                               # e.g. "sql", "enterprise", "session", "system_meta"
     turn_count: int = 0
     scope: str = EntityScope.INDIVIDUAL.value                         # Current conversational entity scope
-    active_topic: Optional[str] = None                               # Topic indicator (e.g. "customer_kyc", "employers")
+    active_topic: Optional[str] = None                               # Topic indicator
     primary_anchor_id: Optional[Any] = None                           # Singular anchor ID to avoid multi-row overwrite drift
-    collection_ids: List[Any] = field(default_factory=list)           # List of entity/customer IDs in a collection/multi-row scope
+    collection_ids: List[Any] = field(default_factory=list)           # List of entity IDs in a collection/multi-row scope
     suggested_actions: List[Dict[str, Any]] = field(default_factory=list) # Proactive next best actions
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,13 +59,17 @@ class SessionWorkingMemory:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionWorkingMemory":
+        ext_entities = data.get("active_external_entities") or data.get("active_vendors") or []
         return cls(
             session_id=data.get("session_id", ""),
             active_entities=data.get("active_entities") or {},
             active_names=data.get("active_names") or [],
             active_documents=data.get("active_documents") or [],
-            active_vendors=data.get("active_vendors") or [],
+            active_cloud_sources=data.get("active_cloud_sources") or [],
+            active_vendors=ext_entities,
+            active_external_entities=ext_entities,
             active_metrics=data.get("active_metrics") or {},
+            active_tables=data.get("active_tables") or [],
             last_target_database=data.get("last_target_database"),
             last_strategy=data.get("last_strategy"),
             turn_count=data.get("turn_count", 0),
@@ -108,8 +115,12 @@ class SessionWorkingMemory:
             return ""
 
         parts = []
-        if self.active_vendors:
-            parts.append(f"Referenced Vendors / Partners: {', '.join(self.active_vendors)}")
+        ext_list = self.active_external_entities or self.active_vendors
+        if ext_list:
+            parts.append(f"Referenced External Entities / Partners: {', '.join(ext_list)}")
+
+        if self.active_cloud_sources:
+            parts.append(f"Referenced Cloud Sources / Repositories: {', '.join(self.active_cloud_sources)}")
 
         if effective_scope != EntityScope.AGGREGATE.value and self.active_entities:
             ent_strs = [f"{k}: {v}" for k, v in self.active_entities.items()]
@@ -119,7 +130,7 @@ class SessionWorkingMemory:
             parts.append(f"Known Names: {', '.join(self.active_names)}")
 
         if effective_scope != EntityScope.AGGREGATE.value and self.collection_ids:
-            parts.append(f"Referenced Customer IDs: {', '.join(str(c) for c in self.collection_ids)}")
+            parts.append(f"Referenced Collection IDs: {', '.join(str(c) for c in self.collection_ids)}")
 
         if self.active_metrics:
             met_strs = [f"{k}: {v}" for k, v in self.active_metrics.items()]

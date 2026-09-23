@@ -16,6 +16,7 @@ from modules.rag_core.providers.llm import BaseLLMService
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.orchestrator.strategies.base import BaseRetrievalStrategy
 from modules.rag_core.context.models import EntityScope
+from modules.rag_core.catalog.manager import CatalogManager
 
 logger = logging.getLogger("sql_strategy")
 
@@ -76,11 +77,13 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         self,
         query: str,
         db_jobs: List[IngestionJob],
-        schema_chunks: List[Any]
+        schema_chunks: List[Any],
+        org_id: Optional[str] = None,
+        db: Optional[Session] = None
     ) -> Optional[IngestionJob]:
         """
         Dynamically determines which registered database contains the relevant tables.
-        Uses scored domain keyword matching and schema chunk verification.
+        Uses dynamic TenantCatalog domain tags, reflected table mappings, and schema vector chunk probe hits.
         """
         if not db_jobs:
             return None
@@ -96,39 +99,80 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             if db_name in lower_query:
                 scores[db_name] += 40
 
-        # 2. Score based on domain keywords (primary = 25 pts, secondary = 2 pts)
-        for db_name, kw_groups in self.DOMAIN_TABLE_KEYWORDS.items():
-            if db_name not in scores:
-                continue
-            primaries = kw_groups.get("primary", [])
-            secondaries = kw_groups.get("secondary", [])
-            for p in primaries:
-                if re.search(r"\b" + re.escape(p) + r"\b", lower_query):
-                    scores[db_name] += 25
-            for s in secondaries:
-                if re.search(r"\b" + re.escape(s) + r"\b", lower_query):
-                    scores[db_name] += 2
+        # 2. Dynamic Catalog Matching (Zero-I/O via CatalogManager)
+        catalog = None
+        if org_id:
+            try:
+                catalog = CatalogManager.get_tenant_catalog(org_id, db=db)
+            except Exception as cat_err:
+                logger.debug(f"[DYNAMIC SQL] Catalog lookup skipped: {cat_err}")
 
-        # 3. Inspect schema chunks for database name header or table names (+5 pts)
-        for chunk in schema_chunks[:3]:
+        catalog_used = False
+        if catalog and catalog.databases:
+            for job in db_jobs:
+                db_key = job.name.lower()
+                db_profile = catalog.databases.get(job.name) or catalog.databases.get(db_key)
+                if not db_profile:
+                    continue
+                catalog_used = True
+
+                # Check if reflected tables of this database are named in query (+35 pts)
+                for tbl_name in db_profile.tables:
+                    if re.search(r"\b" + re.escape(tbl_name.lower()) + r"\b", lower_query):
+                        scores[db_key] += 35
+
+                # Check dynamic primary tags (+25 pts) and secondary tags (+5 pts)
+                for p in db_profile.domain_tags.get("primary", []):
+                    if re.search(r"\b" + re.escape(p.lower()) + r"\b", lower_query):
+                        scores[db_key] += 25
+                for s in db_profile.domain_tags.get("secondary", []):
+                    if re.search(r"\b" + re.escape(s.lower()) + r"\b", lower_query):
+                        scores[db_key] += 5
+
+                # Check dynamic entity keys (+15 pts)
+                for ek in db_profile.all_entity_keys:
+                    if re.search(r"\b" + re.escape(ek.lower()) + r"\b", lower_query):
+                        scores[db_key] += 15
+
+        # Fallback to seed domain keywords if catalog was not populated for these databases
+        if not catalog_used or all(s == 0 for s in scores.values()):
+            for db_name, kw_groups in self.DOMAIN_TABLE_KEYWORDS.items():
+                if db_name not in scores:
+                    continue
+                primaries = kw_groups.get("primary", [])
+                secondaries = kw_groups.get("secondary", [])
+                for p in primaries:
+                    if re.search(r"\b" + re.escape(p) + r"\b", lower_query):
+                        scores[db_name] += 25
+                for s in secondaries:
+                    if re.search(r"\b" + re.escape(s) + r"\b", lower_query):
+                        scores[db_name] += 2
+
+        # 3. Inspect schema vector probe hits (+15 pts for Top 1, +10 for Top 2-3)
+        for idx, chunk in enumerate(schema_chunks[:3]):
             payload = getattr(chunk, "payload", {}) if hasattr(chunk, "payload") else (chunk.get("payload", {}) if isinstance(chunk, dict) else {})
             content = payload.get("content", "").lower()
             filename = payload.get("filename", "").lower()
+            table_in_payload = payload.get("table_name", "").lower()
+            weight = 15 if idx == 0 else 10
+
             for db_name in job_map:
                 if db_name in content or db_name in filename:
-                    scores[db_name] += 5
+                    scores[db_name] += weight
+                elif table_in_payload and db_name in job_map:
+                    if catalog and catalog.databases.get(job_map[db_name].name):
+                        if table_in_payload in catalog.databases[job_map[db_name].name].tables:
+                            scores[db_name] += weight
 
-        # 4. Disambiguation Boost: When inquiring about customers/clientele, boost noros_customer_db
+        # 4. Disambiguation Boosts for legacy banking keywords if present in scores
         has_customer_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
             "customer", "customers", "client", "clients", "our customer", "our customers", "who are our customers"
         ])
         if has_customer_kw and "noros_customer_db" in scores:
             scores["noros_customer_db"] += 30
-            # If asking about customers, penalize noros_operations_db unless branch/atm is explicitly asked
             if not any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in ["branch", "branches", "atm", "atms", "relationship_manager"]):
                 scores["noros_operations_db"] = max(0, scores.get("noros_operations_db", 0) - 20)
 
-        # 5. Core Banking Boost: When inquiring about accounts or balances, boost noros_core_banking_db
         has_balance_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
             "account balance", "account balances", "balances", "balance", "total deposit", "deposit balance", "deposit accounts", "bank accounts"
         ])
@@ -140,7 +184,6 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             logger.info(f"[DYNAMIC SQL] Matched target database '{best_db}' (score: {best_score}).")
             return job_map[best_db]
 
-        # 3. Default fallback to first job
         return db_jobs[0]
 
     def _get_schema_context(
@@ -303,7 +346,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 score_threshold=0.20
             )
 
-            job = self._resolve_target_job(query, db_jobs, probe_hits)
+            job = self._resolve_target_job(query, db_jobs, probe_hits, org_id=user_context.org_id, db=db)
             if not job:
                 yield ("status", {
                     "step": "sql_target_resolution",

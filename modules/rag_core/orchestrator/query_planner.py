@@ -16,11 +16,11 @@ class QueryPlanner:
     ]
 
     STRUCTURED_SQL_KEYWORDS = [
-        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?)\b",
-        r"\b(bvn|nin|ssn|tin|iban|cif|swift)\b",
-        r"\b(customer|customers|account|accounts|client|clients|beneficiar(?:y|ies)|transaction|transactions|transfer|transfers|loan|loans|repayment|repayments|collateral|balance|balances|merchant|merchants|pos|atm|branch|branches|employee|employees|kyc|aml|sanctions|fraud)\b",
+        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?|dataset|columns?|breakdown|per|group by|filter by|distinct)\b",
+        r"\b(id|code|number|reference|mrn|msisdn|imsi|imei|vin|bvn|nin|ssn|tin|iban|cif|swift|sku|uuid|guid)\b",
+        r"\b(customer|customers|patient|patients|subscriber|subscribers|client|clients|account|accounts|beneficiar(?:y|ies)|transaction|transactions|transfer|transfers|loan|loans|repayment|repayments|collateral|balance|balances|merchant|merchants|pos|atm|branch|branches|employee|employees|kyc|aml|sanctions|fraud|encounter|encounters|vitals|prescription|prescriptions|admission|admissions|telemetry|call[_\s]records?|cdr|tower|towers|shipment|shipments|inventory|asset|assets|carrier|carriers|sensor|refinery)\b",
         r"\b(organization|organizations|company|companies|employer|employers|industry|industries|sector|sectors|corporate|corporations|firm|firms|serving|clientele|partners|institution|institutions)\b",
-        r"^\s*(who is|find customer|lookup|verify|verification status|get details|check account|which customer|customer associated with)\b"
+        r"^\s*(who is|find|lookup|verify|verification status|get details|check|which|associated with|details for|status of|search for|list all|show all)\b"
     ]
 
     SYSTEM_META_KEYWORDS = [
@@ -30,7 +30,7 @@ class QueryPlanner:
     ]
 
     DOCUMENT_RAG_KEYWORDS = [
-        r"\b(policy|policies|document|documents|file|files|uploaded|pdf|handbook|manual|contract|procedure|agreement|revenue|q[1-4]|report|internal|nda|org|department|guideline|compliance|sop)\b"
+        r"\b(policy|policies|document|documents|file|files|uploaded|pdf|docx|handbook|manual|contract|procedure|agreement|revenue|q[1-4]|report|internal|nda|org|department|guideline|compliance|sop|s3|sharepoint|drive|cloud|folder|bucket|spreadsheet|sheets?|specs?)\b"
     ]
 
     GENERAL_KNOWLEDGE_PATTERNS = [
