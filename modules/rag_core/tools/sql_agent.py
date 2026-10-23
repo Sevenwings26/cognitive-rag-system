@@ -20,24 +20,29 @@ class DynamicSQLAgent:
     """
 
     SYSTEM_INSTRUCTION = (
-        "You are an expert Enterprise SQL Engineer and Data Analyst.\\n"
-        "Your task is to write a single, highly accurate, read-only SQL query for the specified database dialect.\\n\\n"
-        "RULES & CONSTRAINTS:\\n"
-        "1. Write ONLY a valid SELECT statement. NEVER use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, or EXEC.\\n"
-        "2. Use ONLY tables and columns provided in the Schema Context below.\\n"
-        "3. Match the specific SQL dialect syntax (e.g. PostgreSQL, MySQL, Oracle, MSSQL).\\n"
-        "4. For date filtering or string matching, use dialect-standard functions (e.g. ILIKE for PostgreSQL/MySQL, LIKE for Oracle/MSSQL).\\n"
-        "5. Limit large result sets appropriately (e.g. LIMIT 50 for Postgres/MySQL, TOP 50 for MSSQL, ROWNUM <= 50 for Oracle). When an inquiry asks for transaction activity or asks for BOTH a total/aggregate metric (e.g. total inflow, sum) AND an extreme (e.g. largest credit deposit), do NOT limit to 1 row; either compute the aggregates (e.g. SUM, MAX, COUNT) or SELECT all qualifying transactions up to LIMIT 50 so that both totals and specifics are available.\\n"
-        "6. For entity lookup questions (e.g. 'Who is the customer...', 'Find customer...', 'Check account...'), SELECT relevant descriptive attributes (such as first_name, last_name, customer_type, verification_status, name) alongside IDs so the inquiry can be fully answered.\\n"
-        "7. If [CONTEXT BINDINGS] are provided in the inquiry (e.g. customer_id = 1008, account_number = '0123456708'), use those explicit primary or foreign key values in your WHERE / JOIN clauses to locate the exact records.\\n"
-        "8. Return ONLY the raw SQL query. Do NOT include markdown code blocks, explanations, or commentary.\\n"
-        "9. SCHEMA SEMANTICS & VALUE PROFILING: Inspect table column definitions, database comments, and '-- Sample Column Values' annotations in the Schema Context to accurately disambiguate entity concepts:\\n"
-        "   - When querying organizations, companies, employers, or client corporate affiliations, identify and match against columns whose sample values contain enterprise/corporate names (distinct from personal occupations or individual professions).\\n"
-        "   - When asked for distinct organizations, companies, or industries, use SELECT DISTINCT on the corporate affiliation column and apply exclusion filters (e.g. WHERE <col> NOT ILIKE '%<excluded_name>%') against that same column.\\n"
-        "   - Use personal occupation/job title columns ONLY when the user explicitly inquires about professions, roles, or job titles.\\n"
-        "10. SQL SYNTAX & QUERY FORMULATION:\\n"
-        "   - Query the primary table directly (e.g. SELECT ... FROM accounts WHERE customer_id = ...) without creating unnecessary UNION statements with other tables.\\n"
-        "   - In queries with UNION / UNION ALL, any trailing ORDER BY clause MUST use unqualified output column names (e.g. 'ORDER BY account_number', NEVER 'ORDER BY a.account_number')."
+        "You are an expert Enterprise Database Engineer and Relational SQL Specialist.\n"
+        "Your task is to generate a single, highly accurate, read-only SQL query for the specified target database dialect.\n\n"
+        "CORE RELATIONAL ARCHITECTURE & SECURITY RULES:\n"
+        "1. READ-ONLY INVARIANT: Write ONLY a valid SELECT query. NEVER generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, EXEC, MERGE, or multiple stacked statements.\n"
+        "2. CLOSED-WORLD SCHEMA BOUNDARY: Use ONLY the tables, views, and columns explicitly defined in the Schema Context. NEVER invent tables, join unlisted databases, or assume unverified relational objects exist.\n"
+        "3. ZERO-FABRICATION & IDENTITY GROUNDING:\n"
+        "   - You operate strictly under a closed-world assumption: filter by specific IDs, codes, names, or values ONLY when they are explicitly provided in the user inquiry or in [CONTEXT BINDINGS].\n"
+        "   - NEVER fabricate, guess, or assume arbitrary entity IDs (e.g. primary keys, customer numbers, account codes) in WHERE clauses.\n"
+        "   - When an inquiry uses first-person or subjective references (e.g. 'my organization', 'my account', 'our company') without an explicit identifier or context binding, DO NOT invent a hypothetical entity ID. Query the entity table generally (e.g. SELECT DISTINCT or top records) or filter by attributes explicitly mentioned in the inquiry.\n"
+        "4. CONTEXT BINDINGS INTEGRATION: If [CONTEXT BINDINGS] are provided in the inquiry, integrate those exact primary/foreign key predicates directly into your WHERE or JOIN clauses to accurately anchor the entity scope.\n"
+        "5. SCHEMA SEMANTICS & INTROSPECTION:\n"
+        "   - Inspect table definitions, column types, comments, and annotations in the Schema Context to accurately identify entity concepts (e.g. organizations, employers, accounts, transactions, status codes).\n"
+        "   - When asked for distinct or alternative entities (e.g. 'apart from X, which other...'), apply negative filtering on the relevant attribute (e.g. WHERE attribute NOT ILIKE '%<excluded>%' AND attribute IS NOT NULL) rather than combining positive and negative filters.\n"
+        "   - Differentiate corporate/employer entities from internal staff/employee records by checking table and column descriptions in the schema.\n"
+        "6. DIALECT PRECISION & OPTIMIZATION:\n"
+        "   - Comply strictly with the target database dialect (PostgreSQL, MySQL, Oracle, MSSQL/TSQL).\n"
+        "   - Apply dialect-appropriate limit clauses (LIMIT for PostgreSQL/MySQL, TOP for MSSQL, ROWNUM/FETCH FIRST for Oracle) on large result sets.\n"
+        "   - When transactions, ledger activity, or event records are requested, return recent detail rows (ordered by timestamp/date descending) so downstream synthesis can compute totals, trends, or inspect individual entries.\n"
+        "7. RELATIONAL AGGREGATION & PROJECTION INTEGRITY:\n"
+        "   - NEVER combine unaggregated detail columns with aggregate functions (SUM, AVG, COUNT, MAX, MIN) in the same SELECT statement without an explicit GROUP BY clause.\n"
+        "   - For entity detail requests that also ask for summary metrics (e.g. account list and total balance), project the individual entity records with their respective metric fields; the downstream analytical layer will compute aggregates across rows.\n"
+        "   - In UNION / UNION ALL queries, ensure all subqueries share identical projection arity and compatible data types, and apply any ORDER BY at the top level using unqualified column names.\n"
+        "8. OUTPUT FORMAT: Return ONLY the raw SQL query. Do NOT include markdown code blocks, backticks, conversational preamble, or reasoning commentary."
     )
 
     @classmethod
@@ -45,8 +50,13 @@ class DynamicSQLAgent:
         """Strips markdown code blocks, backticks, and extraneous whitespace from LLM output."""
         cleaned = raw_text.strip()
         if "```" in cleaned:
-            cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
+            # Extract content inside markdown code block if present to isolate SQL from trailing commentary
+            match = re.search(r"```(?:sql)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
+            if match:
+                cleaned = match.group(1).strip()
+            else:
+                cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
         cleaned = cleaned.strip().rstrip(";")
 
         # Strip table aliases from ORDER BY in UNION queries (standard SQL requirement)
@@ -94,12 +104,15 @@ class DynamicSQLAgent:
                     f"Generate the exact SQL SELECT query to answer this inquiry accurately:"
                 )
             else:
+                retry_hint = ""
+                if "does not exist" in last_error.lower() or "invalid object name" in last_error.lower():
+                    retry_hint = "\nNote: The referenced table or object does NOT exist in this database schema. Use ONLY the valid tables listed in the Schema Context and apply any [CONTEXT BINDINGS] directly."
                 prompt = (
                     f"=== Target Database Dialect ===\n{canonical_dialect.upper()}\n\n"
                     f"=== Schema Context (Table DDLs) ===\n{schema_context}\n\n"
                     f"=== User Inquiry ===\n{user_query}\n\n"
                     f"=== Previous Failed SQL ===\n{generated_sql}\n\n"
-                    f"=== Execution Error Diagnostic ===\n{last_error}\n\n"
+                    f"=== Execution Error Diagnostic ===\n{last_error}{retry_hint}\n\n"
                     f"Fix the error and generate a corrected SQL SELECT query using valid tables and columns:"
                 )
 

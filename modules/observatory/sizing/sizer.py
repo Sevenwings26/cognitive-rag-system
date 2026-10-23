@@ -551,3 +551,5 @@ class ModelSizer:
             scaling_advice=advice,
             is_capacity_estimate_only=bool(missing_prerequisites),
         )
+
+

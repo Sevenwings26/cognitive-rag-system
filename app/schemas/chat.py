@@ -37,6 +37,7 @@ class ChatQueryResponse(BaseModel):
     sources: List[SourceCitation] = []
     is_grounded: bool = True
     grounding_confidence: float = 1.0
+    suggested_actions: List[Dict[str, Any]] = []
 
 class ChatSessionItem(BaseModel):
     id: str

@@ -14,6 +14,7 @@ from modules.governance.domain.models import (
 )
 from modules.governance.repositories.document_repository import DocumentRepository
 from modules.rag_core.providers.llm import LLMFactory
+from modules.rag_core.providers.embeddings import EmbeddingFactory
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
 from modules.connectors.registry import ConnectorRegistry
 from core.crypto import decrypt_connection_config
@@ -23,7 +24,8 @@ logger = logging.getLogger("ingestion_worker")
 def get_services():
     db = SessionLocal()
     llm_service = LLMFactory.get_provider()
-    orchestrator = UnifiedRAGOrchestrator(llm_service=llm_service)
+    embedding_service = EmbeddingFactory.get_provider()
+    orchestrator = UnifiedRAGOrchestrator(llm_service=llm_service, embedding_service=embedding_service)
     return db, orchestrator
 
 @celery_app.task(name="async_ingest_document_task")

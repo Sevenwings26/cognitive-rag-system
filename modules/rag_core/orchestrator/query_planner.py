@@ -7,19 +7,28 @@ from modules.rag_core.domain.types import QueryPlan
 QueryExecutionPlan = QueryPlan
 
 class QueryPlanner:
+    SESSION_IDENTITY_PATTERNS = [
+        r"^\s*(who am i|what is my name|what is my role|who is logged in|my profile|my user info|about me)[\s.?!]*$",
+        r"\b(who\s+am\s+i|who\s+is\s+logged\s+in)\b",
+        r"\bwhat\s+(?:is\s+)?(?:the\s+name\s+of\s+)?my\s+(?:organization|company|org|employer|role|profile|details|info)\b",
+        r"\bwhat\s+organization\s+do\s+i\s+belong\s+to\b",
+        r"\bwhat\s+company\s+do\s+i\s+work\s+for\b"
+    ]
+
     CONVERSATIONAL_PATTERNS = [
         r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)\b",
         r"^\s*(who are you|what can you do|help me|how does this work|what is your name)\b",
         r"^\s*(thank you|thanks|bye|goodbye|see you|good night)\b",
-        r"^\s*(how are you|how's it going|what's up)\b"
+        r"^\s*(how are you|how's it going|what's up)\b",
+        r"^\s*(alright|all right|okay|ok|cool|great|got it|sure|noted|yes|no|yeah|yep|nope|fine|understood|sounds good|perfect|awesome|nice)[\s.!,]*$"
     ]
 
     STRUCTURED_SQL_KEYWORDS = [
-        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?)\b",
-        r"\b(bvn|nin|ssn|tin|iban|cif|swift)\b",
-        r"\b(customer|customers|account|accounts|client|clients|beneficiar(?:y|ies)|transaction|transactions|transfer|transfers|loan|loans|repayment|repayments|collateral|balance|balances|merchant|merchants|pos|atm|branch|branches|employee|employees|kyc|aml|sanctions|fraud)\b",
+        r"\b(how many|total|sum|count|average|highest|lowest|minimum|maximum|min|max|revenue|invoices?|orders?|records?|salary|salaries|database|rows?|tables?|aggregate|metrics?|dataset|columns?|breakdown|per|group by|filter by|distinct)\b",
+        r"\b(id|code|number|reference|mrn|msisdn|imsi|imei|vin|bvn|nin|ssn|tin|iban|cif|swift|sku|uuid|guid)\b",
+        r"\b(customer|customers|patient|patients|subscriber|subscribers|client|clients|account|accounts|beneficiar(?:y|ies)|transaction|transactions|transfer|transfers|loan|loans|repayment|repayments|collateral|balance|balances|merchant|merchants|pos|atm|branch|branches|employee|employees|kyc|aml|sanctions|fraud|encounter|encounters|vitals|prescription|prescriptions|admission|admissions|telemetry|call[_\s]records?|cdr|tower|towers|shipment|shipments|inventory|asset|assets|carrier|carriers|sensor|refinery)\b",
         r"\b(organization|organizations|company|companies|employer|employers|industry|industries|sector|sectors|corporate|corporations|firm|firms|serving|clientele|partners|institution|institutions)\b",
-        r"^\s*(who is|find customer|lookup|verify|verification status|get details|check account|which customer|customer associated with)\b"
+        r"^\s*(who is|find|lookup|verify|verification status|get details|check|which|associated with|details for|status of|search for|list all|show all)\b"
     ]
 
     SYSTEM_META_KEYWORDS = [
@@ -29,7 +38,7 @@ class QueryPlanner:
     ]
 
     DOCUMENT_RAG_KEYWORDS = [
-        r"\b(policy|policies|document|documents|file|files|uploaded|pdf|handbook|manual|contract|procedure|agreement|revenue|q[1-4]|report|internal|nda|org|department|guideline|compliance|sop)\b"
+        r"\b(policy|policies|document|documents|file|files|uploaded|pdf|docx|handbook|manual|contract|procedure|agreement|revenue|q[1-4]|report|internal|nda|org|department|guideline|compliance|sop|s3|sharepoint|drive|cloud|folder|bucket|spreadsheet|sheets?|specs?)\b"
     ]
 
     GENERAL_KNOWLEDGE_PATTERNS = [
@@ -47,6 +56,16 @@ class QueryPlanner:
     ) -> QueryPlan:
         clean_query = query.strip()
         lower_query = clean_query.lower()
+
+        is_session_identity = any(re.search(p, lower_query) for p in cls.SESSION_IDENTITY_PATTERNS)
+        if is_session_identity:
+            return QueryPlan(
+                is_conversational_only=True,
+                target_scopes=[],
+                sub_queries=[clean_query],
+                intent_category="SESSION_IDENTITY",
+                is_structured_sql=False
+            )
 
         is_system_meta = any(re.search(p, lower_query) for p in cls.SYSTEM_META_KEYWORDS)
         if is_system_meta:
@@ -97,16 +116,17 @@ class QueryPlanner:
             )
 
         # 2. Dynamic Auto-Routing:
-        # A. Conversational / Greetings
-        for pattern in cls.CONVERSATIONAL_PATTERNS:
-            if re.search(pattern, lower_query):
-                return QueryPlan(
-                    is_conversational_only=True,
-                    target_scopes=[],
-                    sub_queries=[clean_query],
-                    intent_category="CONVERSATIONAL",
-                    is_structured_sql=False
-                )
+        # A. Conversational / Greetings (only if not an explicit SQL or Document query)
+        if not is_sql_intent and not is_doc_intent:
+            for pattern in cls.CONVERSATIONAL_PATTERNS:
+                if re.search(pattern, lower_query):
+                    return QueryPlan(
+                        is_conversational_only=True,
+                        target_scopes=[],
+                        sub_queries=[clean_query],
+                        intent_category="CONVERSATIONAL",
+                        is_structured_sql=False
+                    )
 
         is_doc_intent = any(re.search(p, lower_query) for p in cls.DOCUMENT_RAG_KEYWORDS)
 

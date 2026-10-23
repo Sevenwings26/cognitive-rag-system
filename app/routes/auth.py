@@ -7,6 +7,7 @@ from modules.auth.domain.tokens import TokenData
 from modules.auth.services.token_service import verify_password, create_access_token
 from modules.auth.repositories.user_repository import UserRepository
 from modules.governance.services.audit_logger import AuditLogger
+from modules.auth.validators import validate_enterprise_email
 from app.schemas.auth import (
     UserRegisterPayload, UserLoginPayload, TokenResponse,
     TenantRegistrationPayload, UserProfileResponse
@@ -21,9 +22,10 @@ def register_tenant(payload: TenantRegistrationPayload, db: Session = Depends(ge
     if existing_org:
         raise HTTPException(status_code=400, detail=f"Tenant slug '{slug}' is already registered")
 
-    existing_user = UserRepository.get_by_email(db, payload.admin_email.strip())
+    admin_email = validate_enterprise_email(payload.admin_email)
+    existing_user = UserRepository.get_by_email(db, admin_email)
     if existing_user:
-        raise HTTPException(status_code=400, detail=f"User with email '{payload.admin_email}' already exists")
+        raise HTTPException(status_code=400, detail=f"User with email '{admin_email}' already exists")
 
     # 1. Create Organization
     org = UserRepository.create_org(db, name=payload.org_name.strip(), slug=slug)
@@ -37,7 +39,7 @@ def register_tenant(payload: TenantRegistrationPayload, db: Session = Depends(ge
     user = UserRepository.create_user(
         db=db,
         org_id=org.id,
-        email=payload.admin_email.strip(),
+        email=admin_email,
         password=payload.admin_password,
         full_name=payload.admin_name.strip(),
         role=UserRole.SUPER_ADMIN,
@@ -63,6 +65,12 @@ def register_tenant(payload: TenantRegistrationPayload, db: Session = Depends(ge
         details={"org_name": org.name, "admin_email": user.email}
     )
 
+    try:
+        from modules.observatory.buffer import get_observatory_buffer
+        get_observatory_buffer().record_active_session(user.id)
+    except Exception:
+        pass
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -78,15 +86,16 @@ def register_user(payload: UserRegisterPayload, db: Session = Depends(get_db)):
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
 
-    existing_user = UserRepository.get_by_email(db, payload.email.strip())
+    email = validate_enterprise_email(payload.email)
+    existing_user = UserRepository.get_by_email(db, email)
     if existing_user:
-        raise HTTPException(status_code=400, detail="User with this email already exists")
+        raise HTTPException(status_code=400, detail=f"User with email '{email}' already exists")
 
     role = UserRole(payload.role) if hasattr(UserRole, payload.role) else UserRole.MEMBER
     user = UserRepository.create_user(
         db=db,
         org_id=payload.org_id,
-        email=payload.email.strip(),
+        email=email,
         password=payload.password,
         full_name=payload.full_name.strip() if payload.full_name else None,
         role=role,
@@ -111,6 +120,12 @@ def register_user(payload: UserRegisterPayload, db: Session = Depends(get_db)):
         resource_id=user.id,
         details={"email": user.email, "role": user.role.value}
     )
+
+    try:
+        from modules.observatory.buffer import get_observatory_buffer
+        get_observatory_buffer().record_active_session(user.id)
+    except Exception:
+        pass
 
     return TokenResponse(
         access_token=access_token,
@@ -149,6 +164,12 @@ def login_user(payload: UserLoginPayload, db: Session = Depends(get_db)):
         resource_id=user.id
     )
 
+    try:
+        from modules.observatory.buffer import get_observatory_buffer
+        get_observatory_buffer().record_active_session(user.id)
+    except Exception:
+        pass
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -157,6 +178,15 @@ def login_user(payload: UserLoginPayload, db: Session = Depends(get_db)):
         department_id=user.department_id,
         role=user.role.value
     )
+
+@router.post("/logout")
+def logout_user(current_user: TokenData = Depends(get_current_user)):
+    try:
+        from modules.observatory.buffer import get_observatory_buffer
+        get_observatory_buffer().remove_active_session(current_user.user_id)
+    except Exception:
+        pass
+    return {"status": "ok", "message": "Session terminated successfully"}
 
 @router.get("/me", response_model=UserProfileResponse)
 def get_current_user_profile(current_user: TokenData = Depends(get_current_user)):

@@ -5,9 +5,6 @@ Using the Provider Pattern (also known as the Strategy Pattern) to which between
 import os
 from abc import ABC, abstractmethod
 from typing import Optional, List, Iterator
-from google.genai import types
-from google import genai
-
 
 # Define the Abstract Base Class (Interface)
 class BaseLLMService(ABC):
@@ -32,88 +29,90 @@ class BaseLLMService(ABC):
         if text:
             yield text
 
-    @abstractmethod
     def get_embeddings(self, text: str) -> List[float]:
         """
         Generate vector embeddings for a given text.
+        NOTE: Embeddings are decoupled into BaseEmbeddingService. This method is retained for legacy compatibility.
         """
-        pass
+        raise NotImplementedError("Embeddings have been decoupled from BaseLLMService. Use BaseEmbeddingService.")
 
 
 # Implementation 1: Gemini Provider (New Google GenAI SDK)
-# try:
+try:
+    from google import genai
+    from google.genai import types
 
-class GeminiService(BaseLLMService):
-    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", embedding_model: str = "text-embedding-004"):
-        self.client = genai.Client(api_key=api_key)
-        self.model_name = model_name
-        self.embedding_model = embedding_model
+    class GeminiService(BaseLLMService):
+        def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", embedding_model: str = "text-embedding-004"):
+            self.client = genai.Client(api_key=api_key)
+            self.model_name = model_name
+            self.embedding_model = embedding_model
 
-    def generate_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> str:
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=kwargs.get("temperature", 0.2),
-            max_output_tokens=kwargs.get("max_tokens", None)
-        )
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=config
-        )
-        return response.text.strip()
-
-    def stream_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> Iterator[str]:
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=kwargs.get("temperature", 0.2),
-            max_output_tokens=kwargs.get("max_tokens", None)
-        )
-        try:
-            for chunk in self.client.models.generate_content_stream(
+        def generate_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> str:
+            config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=kwargs.get("temperature", 0.2),
+                max_output_tokens=kwargs.get("max_tokens", None)
+            )
+            response = self.client.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=config
-            ):
-                if chunk.text:
-                    yield chunk.text
-        except Exception:
-            yield self.generate_text(prompt, system_instruction=system_instruction, **kwargs)
+            )
+            return response.text.strip()
 
-    def get_embeddings(self, text: str) -> List[float]:
-        response = self.client.models.embed_content(
-            model=self.embedding_model,
-            contents=text
-        )
-        return response.embeddings[0].values
-            
-# except ImportError:
-#     # Fallback to Legacy google-generativeai SDK if the new SDK is not installed yet
-#     import google.generativeai as genai
-#     class GeminiService(BaseLLMService):
-#         def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", embedding_model: str = "models/text-embedding-004"):
-#             genai.configure(api_key=api_key)
-#             self.model_name = model_name
-#             self.embedding_model = embedding_model
+        def stream_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> Iterator[str]:
+            config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=kwargs.get("temperature", 0.2),
+                max_output_tokens=kwargs.get("max_tokens", None)
+            )
+            try:
+                for chunk in self.client.models.generate_content_stream(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config
+                ):
+                    if chunk.text:
+                        yield chunk.text
+            except Exception:
+                yield self.generate_text(prompt, system_instruction=system_instruction, **kwargs)
 
-#         def generate_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> str:
-#             model = genai.GenerativeModel(
-#                 model_name=self.model_name,
-#                 system_instruction=system_instruction
-#             )
-#             response = model.generate_content(
-#                 prompt,
-#                 generation_config={"temperature": kwargs.get("temperature", 0.2)}
-#             )
-#             return response.text.strip()
+        def get_embeddings(self, text: str) -> List[float]:
+            response = self.client.models.embed_content(
+                model=self.embedding_model,
+                contents=text
+            )
+            return response.embeddings[0].values
+                
+except (ImportError, AttributeError):
+    # Fallback to Legacy google-generativeai SDK if the new SDK is not installed yet
+    import google.generativeai as legacy_genai
+    class GeminiService(BaseLLMService):
+        def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", embedding_model: str = "models/text-embedding-004"):
+            legacy_genai.configure(api_key=api_key)
+            self.model_name = model_name
+            self.embedding_model = embedding_model
 
-#         # CORRECTED LEGACY EMBEDDING CODE:
-#         def get_embeddings(self, text: str) -> List[float]:
-#             result = genai.embed_content(
-#                 model=self.embedding_model,
-#                 content=text,
-#                 task_type="retrieval_document"
-#             )
-#             return result['embedding']
+        def generate_text(self, prompt: str, system_instruction: Optional[str] = None, **kwargs) -> str:
+            model = legacy_genai.GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=system_instruction
+            )
+            response = model.generate_content(
+                prompt,
+                generation_config={"temperature": kwargs.get("temperature", 0.2)}
+            )
+            return response.text.strip()
+
+        # CORRECTED LEGACY EMBEDDING CODE:
+        def get_embeddings(self, text: str) -> List[float]:
+            result = legacy_genai.embed_content(
+                model=self.embedding_model,
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
 
 # Implementation 2: OpenAI-Compatible Provider (vLLM, Ollama, OpenAI)
 from openai import OpenAI
@@ -188,19 +187,27 @@ class LLMFactory:
         """
         Instantiates the selected LLM provider based on the LLM_PROVIDER environment variable.
         """
-        provider_type = os.getenv("LLM_PROVIDER", "gemini").lower()
+        try:
+            from core.config import settings
+        except Exception:
+            settings = None
+
+        provider_type = (
+            os.getenv("LLM_PROVIDER") or
+            getattr(settings, "LLM_PROVIDER", None) or
+            "gemini"
+        ).lower()
 
         if provider_type == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
-            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+            api_key = os.getenv("GEMINI_API_KEY") or getattr(settings, "GEMINI_API_KEY", None)
+            model_name = os.getenv("GEMINI_MODEL") or getattr(settings, "GEMINI_MODEL", None) or "gemini-2.5-flash"
             return GeminiService(api_key=api_key, model_name=model_name)
 
-        elif provider_type == "vllm":
-            base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
-            api_key = os.getenv("VLLM_API_KEY", "not-needed")
-            model_name = os.getenv("VLLM_MODEL")
-            # You can specify a local embedding model running in vLLM or fallback
-            embedding_model = os.getenv("VLLM_EMBEDDING_MODEL") 
+        if provider_type == "vllm":
+            base_url = os.getenv("VLLM_BASE_URL") or getattr(settings, "VLLM_BASE_URL", None) or "http://host.docker.internal:8000/v1"
+            api_key = os.getenv("VLLM_API_KEY") or getattr(settings, "VLLM_API_KEY", None) or "not-needed"
+            model_name = os.getenv("VLLM_MODEL") or getattr(settings, "VLLM_MODEL", None)
+            embedding_model = os.getenv("VLLM_EMBEDDING_MODEL") or getattr(settings, "VLLM_EMBEDDING_MODEL", None)
             return OpenAICompatibleService(
                 base_url=base_url,
                 api_key=api_key,
@@ -209,10 +216,16 @@ class LLMFactory:
             )
 
         elif provider_type == "ollama":
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-            api_key = os.getenv("OLLAMA_API_KEY", "ollama")
-            model_name = os.getenv("OLLAMA_MODEL", "llama3")
-            embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+            base_url = os.getenv("OLLAMA_BASE_URL") or getattr(settings, "OLLAMA_BASE_URL", None) or "http://host.docker.internal:11434/v1"
+            api_key = os.getenv("OLLAMA_API_KEY") or getattr(settings, "OLLAMA_API_KEY", None) or "ollama"
+            model_name = os.getenv("OLLAMA_MODEL") or getattr(settings, "OLLAMA_MODEL", None) or "gemma3:12b"
+            embedding_model = (
+                os.getenv("EMBEDDING_MODEL") or
+                getattr(settings, "EMBEDDING_MODEL", None) or
+                os.getenv("OLLAMA_EMBEDDING_MODEL") or
+                getattr(settings, "OLLAMA_EMBEDDING_MODEL", None) or
+                "qwen3-embedding:0.6b"
+            )
             return OpenAICompatibleService(
                 base_url=base_url,
                 api_key=api_key,
@@ -221,9 +234,9 @@ class LLMFactory:
             )
 
         elif provider_type == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-            embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+            api_key = getattr(settings, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+            model_name = getattr(settings, "OPENAI_MODEL", None) or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            embedding_model = getattr(settings, "OPENAI_EMBEDDING_MODEL", None) or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
             return OpenAICompatibleService(
                 base_url=None, # Uses standard OpenAI URL
                 api_key=api_key,

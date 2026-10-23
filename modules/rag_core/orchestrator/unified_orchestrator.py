@@ -2,7 +2,7 @@
 import uuid
 import logging
 import time
-from typing import List, Dict, Any, Optional, Tuple, Iterator
+from typing import List, Dict, Any, Optional, Tuple, Iterator, Union
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -17,6 +17,7 @@ from modules.governance.services.audit_logger import AuditLogger
 from modules.connectors.parsers.factory import ParserFactory
 from modules.connectors.sources.file_connector import FileConnector
 from modules.rag_core.providers.llm import BaseLLMService, LLMFactory
+from modules.rag_core.providers.embeddings import BaseEmbeddingService, EmbeddingFactory
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.retrieval.security_filter import RAGSecurityFilterBuilder
 from modules.rag_core.retrieval.hybrid_retriever import HybridRetriever
@@ -37,8 +38,11 @@ from modules.rag_core.context import (
     SessionWorkingMemory,
     SessionContextManager,
     QueryCondenser,
-    StateHarvester
+    StateHarvester,
+    ActionProposer,
+    SuggestedAction
 )
+from modules.rag_core.catalog.manager import CatalogManager
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
 
@@ -50,21 +54,47 @@ class UnifiedRAGOrchestrator:
         llm_service: Optional[BaseLLMService] = None,
         vector_store: Optional[VectorStoreService] = None,
         reranker: Optional[CrossEncoderReranker] = None,
-        knowledge_registry: Optional[KnowledgeRegistry] = None
+        knowledge_registry: Optional[KnowledgeRegistry] = None,
+        embedding_service: Optional[BaseEmbeddingService] = None
     ):
         self.llm = llm_service or LLMFactory.get_provider()
+        self.embedding_service = (
+            embedding_service or
+            EmbeddingFactory.get_provider()
+        )
         self.vector_store = vector_store or VectorStoreService()
         self.reranker = reranker or CrossEncoderReranker()
         self.registry = knowledge_registry or KnowledgeRegistry()
-        self.hybrid_retriever = HybridRetriever(vector_store=self.vector_store, llm_service=self.llm)
+        self.hybrid_retriever = HybridRetriever(
+            vector_store=self.vector_store,
+            llm_service=self.llm,
+            embedding_service=self.embedding_service
+        )
         self.grounding_validator = GroundingValidator()
         self.prompt_engine = PromptEngine()
 
         # Modular Strategies
         self.conversational_strategy = ConversationalStrategy(self.llm, self.prompt_engine)
-        self.session_strategy = SessionDocumentStrategy(self.vector_store, self.llm, self.grounding_validator, self.prompt_engine)
-        self.enterprise_strategy = EnterpriseKnowledgeStrategy(self.vector_store, self.llm, self.reranker, self.grounding_validator, self.prompt_engine)
-        self.sql_strategy = DynamicSQLStrategy(self.vector_store, self.llm)
+        self.session_strategy = SessionDocumentStrategy(
+            self.vector_store,
+            self.llm,
+            self.grounding_validator,
+            self.prompt_engine,
+            embedding_service=self.embedding_service
+        )
+        self.enterprise_strategy = EnterpriseKnowledgeStrategy(
+            self.vector_store,
+            self.llm,
+            self.reranker,
+            self.grounding_validator,
+            self.prompt_engine,
+            embedding_service=self.embedding_service
+        )
+        self.sql_strategy = DynamicSQLStrategy(
+            self.vector_store,
+            self.llm,
+            embedding_service=self.embedding_service
+        )
         self.meta_strategy = SystemMetaStrategy()
 
     def execute_unified_query_stream(
@@ -105,7 +135,7 @@ class UnifiedRAGOrchestrator:
                     dept_name = dept.name
 
         # 2. Universal Working Memory & History Context
-        working_memory = SessionContextManager.get_memory(session_id)
+        working_memory = SessionContextManager.get_memory(session_id, db=db)
         history = SessionContextManager.get_recent_history(db, session_id, current_query=query)
 
         # 3. Anaphora Resolution & Query Condensation
@@ -148,6 +178,8 @@ class UnifiedRAGOrchestrator:
         target_desc = "Relational SQL Agent" if plan.is_structured_sql else ("Session Documents" if (scope == "session" or (has_session_documents and scope != "enterprise")) else ("Conversational" if plan.is_conversational_only else "Enterprise Knowledge Base"))
         if plan.intent_category == "SYSTEM_META":
             target_desc = "System Meta Registry (RBAC)"
+        elif plan.intent_category == "SESSION_IDENTITY":
+            target_desc = "Session Identity & Persona"
 
         yield ("status", {
             "step": "query_planning",
@@ -233,15 +265,27 @@ class UnifiedRAGOrchestrator:
 
         # Fallback if Dynamic SQL yielded None (failed AST/schema/execution)
         if response is None and strategy_used == "sql":
-            logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
-            yield ("status", {
-                "step": "sql_fallback",
-                "stage": "routing",
-                "title": "Fallback to Document RAG",
-                "details": "Relational query inconclusive. Routing to enterprise document search.",
-                "status": "completed"
-            })
-            strategy_stream = None
+            is_explicit_db = plan.is_structured_sql or any(
+                kw in condensed_query.lower() for kw in ["database", "table", "bvn", "account balance", "customer", "customers", "loan", "loans"]
+            )
+            if not is_explicit_db:
+                logger.info("[DYNAMIC SQL] Fallback triggered; routing to document RAG.")
+                yield ("status", {
+                    "step": "sql_fallback",
+                    "stage": "routing",
+                    "title": "Fallback to Document RAG",
+                    "details": "Relational query inconclusive. Routing to enterprise document search.",
+                    "status": "completed"
+                })
+                strategy_stream = None
+            else:
+                logger.info("[DYNAMIC SQL] SQL query returned no result; maintaining database error boundary.")
+                fallback_msg = (
+                    "I was unable to retrieve matching database records for this inquiry across our connected database systems. "
+                    "Please verify the requested identifiers or search criteria."
+                )
+                yield ("delta", {"content": fallback_msg})
+                response = (fallback_msg, [], False, 0.0)
 
         # --- ROUTE C: Scoped In-Chat Documents vs Enterprise Knowledge Base ---
         if response is None:
@@ -305,15 +349,54 @@ class UnifiedRAGOrchestrator:
             extra_meta["rows"] = first_src.get("rows", [])
             extra_meta["database_name"] = first_src.get("database_name")
 
+        catalog = CatalogManager.get_tenant_catalog(user_context.org_id, db=db) if user_context else None
+
         updated_memory = StateHarvester.harvest(
             memory=working_memory,
             strategy_name=strategy_used,
             query=condensed_query,
             answer=answer,
             sources=sources,
+            catalog=catalog,
+            org_id=user_context.org_id if user_context else None,
             extra_meta=extra_meta
         )
-        SessionContextManager.save_memory(updated_memory)
+
+        # =========================================================================
+        # [FEATURE FLAG / OPTIONAL]: Proactive Agent Cognition (ActionProposer)
+        # -------------------------------------------------------------------------
+        # Currently disabled per user request.
+        # To re-enable in the future:
+        #   1. Uncomment the lines below.
+        #   2. Remove or comment out 'actions_payload = []'.
+        # =========================================================================
+        actions_payload = []
+        # suggested_actions = ActionProposer.propose_actions(
+        #     memory=updated_memory,
+        #     query=condensed_query,
+        #     answer=answer,
+        #     strategy_used=strategy_used,
+        #     llm_service=self.llm
+        # )
+        # actions_payload = [
+        #     a.model_dump() if hasattr(a, "model_dump") else a for a in suggested_actions
+        # ]
+        # updated_memory.suggested_actions = actions_payload
+        #
+        # # Embed consultative follow-up recommendations directly into the assistant's Markdown response
+        # recommendations_block = ActionProposer.format_embedded_recommendations(suggested_actions)
+        # if recommendations_block:
+        #     yield ("delta", {"content": recommendations_block})
+        #     answer = f"{answer.rstrip()}{recommendations_block}"
+        # =========================================================================
+
+        SessionContextManager.save_memory(updated_memory, db=db)
+
+        # Emit typed SSE actions event immediately after execution
+        yield ("actions", {
+            "actions": actions_payload,
+            "session_id": session_id
+        })
 
         # Remove internal raw rows from public source objects so they don't bloat citation_metadata
         if strategy_used == "sql" and sources:
@@ -328,7 +411,8 @@ class UnifiedRAGOrchestrator:
             "session_id": session_id,
             "is_grounded": is_grounded,
             "confidence": confidence,
-            "strategy_used": strategy_used
+            "strategy_used": strategy_used,
+            "suggested_actions": actions_payload
         })
 
     def execute_unified_query(
@@ -342,13 +426,19 @@ class UnifiedRAGOrchestrator:
         template_id: Optional[str] = None,
         top_k: int = 3,
         score_threshold: float = 0.35,
-        mode: str = "auto"
-    ) -> Tuple[str, List[Dict[str, Any]], bool, float]:
-        """Synchronous wrapper consuming execute_unified_query_stream for backward compatibility."""
+        mode: str = "auto",
+        return_actions: bool = False
+    ) -> Union[Tuple[str, List[Dict[str, Any]], bool, float], Tuple[str, List[Dict[str, Any]], bool, float, List[Dict[str, Any]]]]:
+        """
+        Synchronous wrapper consuming execute_unified_query_stream.
+        Maintains 100% backward compatibility by returning a 4-tuple by default,
+        or a 5-tuple with suggested_actions when return_actions=True.
+        """
         accumulated_answer = ""
         final_sources = []
         is_grounded = True
         confidence = 1.0
+        final_actions: List[Dict[str, Any]] = []
 
         for event_type, payload in self.execute_unified_query_stream(
             query=query,
@@ -364,11 +454,19 @@ class UnifiedRAGOrchestrator:
         ):
             if event_type == "delta":
                 accumulated_answer += payload.get("content", "")
+            elif event_type == "actions":
+                final_actions = payload.get("actions", [])
             elif event_type == "metadata":
                 final_sources = payload.get("sources", [])
                 is_grounded = payload.get("is_grounded", True)
                 confidence = payload.get("confidence", 1.0)
+                if not final_actions:
+                    final_actions = payload.get("suggested_actions", [])
 
+        self.last_suggested_actions = final_actions
+
+        if return_actions:
+            return accumulated_answer, final_sources, is_grounded, confidence, final_actions
         return accumulated_answer, final_sources, is_grounded, confidence
 
 
@@ -512,13 +610,14 @@ class UnifiedRAGOrchestrator:
 
         # 1. Batch / Parallelized Vector Embedding Generation
         embeddings = []
-        if hasattr(self.llm, "get_embeddings_batch"):
+        if hasattr(self.embedding_service, "get_embeddings_batch"):
             try:
-                embeddings = self.llm.get_embeddings_batch(chunks)
-            except Exception:
-                embeddings = [self.llm.get_embeddings(c) for c in chunks]
+                embeddings = self.embedding_service.get_embeddings_batch(chunks)
+            except Exception as emb_batch_err:
+                logger.warning(f"Batch embedding failed ({emb_batch_err}); falling back to sequential generation.")
+                embeddings = [self.embedding_service.get_embeddings(c) for c in chunks]
         else:
-            embeddings = [self.llm.get_embeddings(c) for c in chunks]
+            embeddings = [self.embedding_service.get_embeddings(c) for c in chunks]
 
         # 2. Prepare Points for Qdrant and Entities for PostgreSQL
         doc_scope = "session" if (session_id and session_id.strip()) else "enterprise"

@@ -105,6 +105,9 @@ class ObservatoryBuffer:
         # Active AlertManager alerts state tracking: fingerprint -> alert_dict
         self._active_alerts: Dict[str, Dict[str, Any]] = {}
 
+        # Active authenticated user/token sessions (session_key -> last_seen_timestamp)
+        self._active_sessions: Dict[str, float] = {}
+
         # Snapshot cache (2s TTL to prevent lock contention from rapid multi-tab polling)
         self._cached_metrics: Optional[Dict[str, Any]] = None
         self._cached_metrics_ts: float = 0.0
@@ -205,6 +208,99 @@ class ObservatoryBuffer:
                 pass
         with self._lock:
             return self._current_concurrency
+
+    # --- Authoritative Active Token Sessions Tracking ---
+    def record_active_session(
+        self,
+        session_key: str,
+        ttl_seconds: Optional[int] = None,
+    ) -> None:
+        """
+        Record or refresh an active authenticated session in Redis and local memory.
+        session_key is typically user_id or a unique session token identifier.
+        """
+        if not session_key:
+            return
+        now = time.time()
+        try:
+            from core.config import settings
+            expire_minutes = getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 1440)
+        except Exception:
+            expire_minutes = 1440
+
+        window = ttl_seconds if ttl_seconds is not None else (int(expire_minutes) * 60)
+        str_key = str(session_key)
+
+        # 1. Update in-memory dict
+        with self._lock:
+            self._active_sessions[str_key] = now
+
+        # 2. Update Redis sorted set & compatibility key if Redis is available
+        r = self._get_redis()
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.zremrangebyscore(f"{self._prefix}:sessions:active", 0, now - window)
+                pipe.zadd(f"{self._prefix}:sessions:active", {str_key: now})
+                pipe.expire(f"{self._prefix}:sessions:active", int(window * 2))
+                pipe.set(f"api_token:{str_key}", "1", ex=int(window))
+                pipe.execute()
+            except Exception as exc:
+                logger.debug("Could not record active session to Redis: %s", exc)
+
+    def remove_active_session(self, session_key: str) -> None:
+        """Explicitly remove an active session (e.g., on logout)."""
+        if not session_key:
+            return
+        str_key = str(session_key)
+        with self._lock:
+            self._active_sessions.pop(str_key, None)
+        r = self._get_redis()
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.zrem(f"{self._prefix}:sessions:active", str_key)
+                pipe.delete(f"api_token:{str_key}")
+                pipe.execute()
+            except Exception as exc:
+                logger.debug("Could not remove active session from Redis: %s", exc)
+
+    def get_active_sessions_count(self, window_seconds: Optional[int] = None) -> Optional[int]:
+        """Count active token sessions from Redis or in-memory fallback within sliding window."""
+        now = time.time()
+        try:
+            from core.config import settings
+            expire_minutes = getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 1440)
+        except Exception:
+            expire_minutes = 1440
+
+        window = window_seconds if window_seconds is not None else (int(expire_minutes) * 60)
+        cutoff = now - window
+
+        r = self._get_redis()
+        if r is not None:
+            try:
+                pipe = r.pipeline()
+                pipe.zremrangebyscore(f"{self._prefix}:sessions:active", 0, cutoff)
+                pipe.zcard(f"{self._prefix}:sessions:active")
+                res = pipe.execute()
+                redis_count = int(res[1])
+                if redis_count > 0:
+                    return redis_count
+
+                # Legacy fallback: check api_token:* keys in Redis
+                legacy_count = sum(1 for _ in r.scan_iter(match="api_token:*", count=100))
+                if legacy_count > 0:
+                    return legacy_count
+            except Exception as exc:
+                logger.debug("Could not query active sessions from Redis: %s", exc)
+
+        # Fallback to in-memory active sessions
+        with self._lock:
+            expired = [k for k, ts in self._active_sessions.items() if ts < cutoff]
+            for k in expired:
+                del self._active_sessions[k]
+            return len(self._active_sessions)
 
     # --- Authoritative Chat-Turn Route Recording ---
     def record_turn_route(
@@ -509,14 +605,8 @@ class ObservatoryBuffer:
         redis_success = False
         redis_failed = False
 
-        if active_sessions_count is None and r is not None:
-            try:
-                active_sessions_count = sum(
-                    1 for _ in r.scan_iter(match="api_token:*", count=100)
-                )
-            except Exception as exc:
-                logger.debug("Could not query active sessions from Redis: %s", exc)
-                active_sessions_count = None
+        if active_sessions_count is None:
+            active_sessions_count = self.get_active_sessions_count()
 
         total_requests = 0
         user_requests = 0

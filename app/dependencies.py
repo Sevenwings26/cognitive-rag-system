@@ -9,13 +9,15 @@ from modules.auth.domain.tokens import TokenData
 from modules.auth.services.token_service import decode_access_token
 from modules.auth.repositories.user_repository import UserRepository
 from modules.rag_core.providers.llm import LLMFactory
+from modules.rag_core.providers.embeddings import EmbeddingFactory
 from modules.rag_core.orchestrator.unified_orchestrator import UnifiedRAGOrchestrator
 
 security_scheme = HTTPBearer(auto_error=False)
 
 def get_orchestrator() -> UnifiedRAGOrchestrator:
     llm_service = LLMFactory.get_provider()
-    return UnifiedRAGOrchestrator(llm_service=llm_service)
+    embedding_service = EmbeddingFactory.get_provider()
+    return UnifiedRAGOrchestrator(llm_service=llm_service, embedding_service=embedding_service)
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
@@ -39,6 +41,12 @@ def get_current_user(
         if not user_id or not org_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
+        try:
+            from modules.observatory.buffer import get_observatory_buffer
+            get_observatory_buffer().record_active_session(user_id)
+        except Exception:
+            pass
+
         return TokenData(
             user_id=user_id,
             org_id=org_id,
@@ -61,6 +69,11 @@ def get_optional_user(
         org_id = payload.get("org_id")
         role = payload.get("role")
         if user_id and org_id:
+            try:
+                from modules.observatory.buffer import get_observatory_buffer
+                get_observatory_buffer().record_active_session(user_id)
+            except Exception:
+                pass
             return TokenData(
                 user_id=user_id,
                 org_id=org_id,

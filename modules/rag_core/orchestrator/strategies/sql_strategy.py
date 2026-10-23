@@ -13,8 +13,11 @@ from modules.governance.services.audit_logger import AuditLogger
 from modules.connectors.security.sql_guard import SQLSecurityGuard
 from modules.rag_core.tools.sql_agent import DynamicSQLAgent
 from modules.rag_core.providers.llm import BaseLLMService
+from modules.rag_core.providers.embeddings import BaseEmbeddingService, EmbeddingFactory
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.orchestrator.strategies.base import BaseRetrievalStrategy
+from modules.rag_core.context.models import EntityScope
+from modules.rag_core.catalog.manager import CatalogManager
 
 logger = logging.getLogger("sql_strategy")
 
@@ -36,7 +39,13 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
     # Semantic database mapping for banking / enterprise domains with primary & secondary weights
     DOMAIN_TABLE_KEYWORDS = {
         "noros_customer_db": {
-            "primary": ["bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is", "find customer", "look up customer", "address", "segment", "organization", "organizations", "company", "companies", "employer", "employers", "industry", "industries", "sector", "sectors", "corporate", "serving", "clientele"],
+            "primary": [
+                "bvn", "nin", "kyc", "identity", "customer_profile", "customer_master", "who is",
+                "find customer", "look up customer", "address", "segment", "organization", "organizations",
+                "company", "companies", "employer", "employers", "industry", "industries", "sector", "sectors",
+                "corporate", "serving", "clientele", "employee who are our customers", "employees who are our customers",
+                "their employee", "their employees", "employee of", "employees of", "employed by", "works at", "work at"
+            ],
             "secondary": ["customer", "customers", "client", "person", "individual"]
         },
         "noros_core_banking_db": {
@@ -56,24 +65,35 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             "secondary": ["screening", "flagged"]
         },
         "noros_operations_db": {
-            "primary": ["branch", "branches", "atm", "atms", "employee", "employees", "relationship_manager", "relationship_managers"],
-            "secondary": ["operation", "operations"]
+            "primary": ["branch", "branches", "atm", "atms", "relationship_manager", "relationship_managers", "bank employee", "bank employees", "internal employee", "internal employees", "bank staff"],
+            "secondary": ["operation", "operations", "employee", "employees", "staff"]
         }
     }
 
-    def __init__(self, vector_store: VectorStoreService, llm_service: BaseLLMService):
+    def __init__(
+        self,
+        vector_store: VectorStoreService,
+        llm_service: BaseLLMService,
+        embedding_service: Optional[BaseEmbeddingService] = None
+    ):
         self.vector_store = vector_store
         self.llm = llm_service
+        self.embedding_service = (
+            embedding_service or
+            EmbeddingFactory.get_provider()
+        )
 
     def _resolve_target_job(
         self,
         query: str,
         db_jobs: List[IngestionJob],
-        schema_chunks: List[Any]
+        schema_chunks: List[Any],
+        org_id: Optional[str] = None,
+        db: Optional[Session] = None
     ) -> Optional[IngestionJob]:
         """
         Dynamically determines which registered database contains the relevant tables.
-        Uses scored domain keyword matching and schema chunk verification.
+        Uses dynamic TenantCatalog domain tags, reflected table mappings, and schema vector chunk probe hits.
         """
         if not db_jobs:
             return None
@@ -89,35 +109,91 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
             if db_name in lower_query:
                 scores[db_name] += 40
 
-        # 2. Score based on domain keywords (primary = 25 pts, secondary = 2 pts)
-        for db_name, kw_groups in self.DOMAIN_TABLE_KEYWORDS.items():
-            if db_name not in scores:
-                continue
-            primaries = kw_groups.get("primary", [])
-            secondaries = kw_groups.get("secondary", [])
-            for p in primaries:
-                if re.search(r"\b" + re.escape(p) + r"\b", lower_query):
-                    scores[db_name] += 25
-            for s in secondaries:
-                if re.search(r"\b" + re.escape(s) + r"\b", lower_query):
-                    scores[db_name] += 2
+        # 2. Dynamic Catalog Matching (Zero-I/O via CatalogManager)
+        catalog = None
+        if org_id:
+            try:
+                catalog = CatalogManager.get_tenant_catalog(org_id, db=db)
+            except Exception as cat_err:
+                logger.debug(f"[DYNAMIC SQL] Catalog lookup skipped: {cat_err}")
 
-        # 3. Inspect schema chunks for database name header or table names (+5 pts)
-        for chunk in schema_chunks[:3]:
+        catalog_used = False
+        if catalog and catalog.databases:
+            for job in db_jobs:
+                db_key = job.name.lower()
+                db_profile = catalog.databases.get(job.name) or catalog.databases.get(db_key)
+                if not db_profile:
+                    continue
+                catalog_used = True
+
+                # Check if reflected tables of this database are named in query (+35 pts)
+                for tbl_name in db_profile.tables:
+                    if re.search(r"\b" + re.escape(tbl_name.lower()) + r"\b", lower_query):
+                        scores[db_key] += 35
+
+                # Check dynamic primary tags (+25 pts) and secondary tags (+5 pts)
+                for p in db_profile.domain_tags.get("primary", []):
+                    if re.search(r"\b" + re.escape(p.lower()) + r"\b", lower_query):
+                        scores[db_key] += 25
+                for s in db_profile.domain_tags.get("secondary", []):
+                    if re.search(r"\b" + re.escape(s.lower()) + r"\b", lower_query):
+                        scores[db_key] += 5
+
+                # Check dynamic entity keys (+15 pts)
+                for ek in db_profile.all_entity_keys:
+                    if re.search(r"\b" + re.escape(ek.lower()) + r"\b", lower_query):
+                        scores[db_key] += 15
+
+        # Fallback to seed domain keywords if catalog was not populated for these databases
+        if not catalog_used or all(s == 0 for s in scores.values()):
+            for db_name, kw_groups in self.DOMAIN_TABLE_KEYWORDS.items():
+                if db_name not in scores:
+                    continue
+                primaries = kw_groups.get("primary", [])
+                secondaries = kw_groups.get("secondary", [])
+                for p in primaries:
+                    if re.search(r"\b" + re.escape(p) + r"\b", lower_query):
+                        scores[db_name] += 25
+                for s in secondaries:
+                    if re.search(r"\b" + re.escape(s) + r"\b", lower_query):
+                        scores[db_name] += 2
+
+        # 3. Inspect schema vector probe hits (+15 pts for Top 1, +10 for Top 2-3)
+        for idx, chunk in enumerate(schema_chunks[:3]):
             payload = getattr(chunk, "payload", {}) if hasattr(chunk, "payload") else (chunk.get("payload", {}) if isinstance(chunk, dict) else {})
             content = payload.get("content", "").lower()
             filename = payload.get("filename", "").lower()
+            table_in_payload = payload.get("table_name", "").lower()
+            weight = 15 if idx == 0 else 10
+
             for db_name in job_map:
                 if db_name in content or db_name in filename:
-                    scores[db_name] += 5
+                    scores[db_name] += weight
+                elif table_in_payload and db_name in job_map:
+                    if catalog and catalog.databases.get(job_map[db_name].name):
+                        if table_in_payload in catalog.databases[job_map[db_name].name].tables:
+                            scores[db_name] += weight
 
+        # 4. Disambiguation Boosts for legacy banking keywords if present in scores
+        has_customer_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
+            "customer", "customers", "client", "clients", "our customer", "our customers", "who are our customers"
+        ])
+        if has_customer_kw and "noros_customer_db" in scores:
+            scores["noros_customer_db"] += 30
+            if not any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in ["branch", "branches", "atm", "atms", "relationship_manager"]):
+                scores["noros_operations_db"] = max(0, scores.get("noros_operations_db", 0) - 20)
+
+        has_balance_kw = any(re.search(r"\b" + re.escape(w) + r"\b", lower_query) for w in [
+            "account balance", "account balances", "balances", "balance", "total deposit", "deposit balance", "deposit accounts", "bank accounts"
+        ])
+        if has_balance_kw and "noros_core_banking_db" in scores:
+            scores["noros_core_banking_db"] += 50
 
         best_db, best_score = max(scores.items(), key=lambda x: x[1])
         if best_score > 0:
             logger.info(f"[DYNAMIC SQL] Matched target database '{best_db}' (score: {best_score}).")
             return job_map[best_db]
 
-        # 3. Default fallback to first job
         return db_jobs[0]
 
     def _get_schema_context(
@@ -153,7 +229,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id))
             ]
         )
-        query_vector = self.llm.get_embeddings(query)
+        query_vector = self.embedding_service.get_embeddings(query)
         schema_hits = self.vector_store.search_vectors(
             query_vector=query_vector,
             search_filter=schema_filter,
@@ -191,6 +267,47 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         except Exception as ref_err:
             logger.warning(f"[DYNAMIC SQL] Dynamic schema reflection failed: {ref_err}")
             return "", []
+
+    def _resolve_customer_id_by_bvn(
+        self,
+        bvn: str,
+        user_context: TokenData,
+        db: Optional[Session]
+    ) -> Optional[int]:
+        """
+        Fast cross-database identity bridge: Resolves a regulatory 11-digit BVN
+        to customer_id from noros_customer_db so domain-isolated databases
+        (noros_lending_db, noros_core_banking_db) can filter by primary key.
+        """
+        if not db or not bvn:
+            return None
+        try:
+            from modules.governance.domain.models import IngestionJob
+            from core.crypto import decrypt_connection_config
+            from modules.connectors.security.sql_guard import SQLSecurityGuard
+            from sqlalchemy import create_engine, text
+
+            cust_job = db.query(IngestionJob).filter(
+                IngestionJob.org_id == user_context.org_id,
+                IngestionJob.name == "noros_customer_db"
+            ).first()
+            if not cust_job:
+                return None
+
+            decrypted = decrypt_connection_config(cust_job.connection_config)
+            dialect = SQLSecurityGuard.canonical_dialect(cust_job.source_type)
+            url = SQLSecurityGuard.safe_build_db_url(dialect, decrypted)
+            engine = create_engine(url)
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT customer_id FROM bvn_records WHERE bvn = :bvn LIMIT 1"),
+                    {"bvn": bvn}
+                ).fetchone()
+                if row and row[0] is not None:
+                    return int(row[0])
+        except Exception as e:
+            logger.warning(f"[DYNAMIC SQL] Failed cross-database BVN resolution: {e}")
+        return None
 
     def execute_stream(
         self,
@@ -231,7 +348,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 "status": "in_progress"
             })
 
-            query_vector = self.llm.get_embeddings(query)
+            query_vector = self.embedding_service.get_embeddings(query)
             probe_hits = self.vector_store.search_vectors(
                 query_vector=query_vector,
                 search_filter=Filter(must=[FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id))]),
@@ -239,7 +356,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 score_threshold=0.20
             )
 
-            job = self._resolve_target_job(query, db_jobs, probe_hits)
+            job = self._resolve_target_job(query, db_jobs, probe_hits, org_id=user_context.org_id, db=db)
             if not job:
                 yield ("status", {
                     "step": "sql_target_resolution",
@@ -277,11 +394,42 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 "status": "completed"
             })
 
-            # Injected Context Bindings from SessionWorkingMemory
+            # Injected Context Bindings from SessionWorkingMemory & Cross-Engine Bridge
             working_memory = kwargs.get("working_memory")
             query_with_bindings = query
-            if working_memory and getattr(working_memory, "active_entities", None):
-                bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items()) + "]"
+            bindings = []
+
+            # Cross-database Identity Bridge:
+            # If target database is domain-isolated (noros_lending_db or noros_core_banking_db)
+            # and customer_id is not yet bound, resolve customer_id from BVN via noros_customer_db
+            if job.name in ("noros_lending_db", "noros_core_banking_db"):
+                has_cid = working_memory and "customer_id" in working_memory.active_entities
+                if not has_cid:
+                    bvn_cand = (working_memory.active_entities.get("bvn") if working_memory else None)
+                    if not bvn_cand:
+                        bvn_m = re.search(r"\b(\d{11})\b", query)
+                        if bvn_m:
+                            bvn_cand = bvn_m.group(1)
+                    if bvn_cand:
+                        resolved_cid = self._resolve_customer_id_by_bvn(bvn_cand, user_context, db)
+                        if resolved_cid:
+                            if working_memory:
+                                working_memory.active_entities["customer_id"] = resolved_cid
+                                working_memory.primary_anchor_id = resolved_cid
+                            else:
+                                bindings.append(f"customer_id = {resolved_cid}")
+                            logger.info(f"[DYNAMIC SQL] Cross-engine identity bridge: resolved BVN {bvn_cand} to customer_id {resolved_cid}")
+
+            if working_memory:
+                if getattr(working_memory, "scope", None) not in (EntityScope.AGGREGATE.value, EntityScope.SYSTEM_META.value):
+                    if getattr(working_memory, "active_entities", None):
+                        bindings.extend(f"{k} = {repr(v)}" for k, v in working_memory.active_entities.items())
+                    if getattr(working_memory, "collection_ids", None) and getattr(working_memory, "scope", None) == EntityScope.COLLECTION.value:
+                        cids_str = ", ".join(str(c) for c in working_memory.collection_ids)
+                        bindings.append(f"customer_id IN ({cids_str})")
+
+            if bindings:
+                bindings_str = "\n[CONTEXT BINDINGS: " + ", ".join(bindings) + "]"
                 query_with_bindings = query + bindings_str
                 logger.info(f"[DYNAMIC SQL] Injected context bindings: {bindings_str.strip()}")
 
@@ -328,16 +476,26 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     for r in rows[:15]:
                         row_vals = [str(r.get(c, "N/A")) for c in cols]
                         md_table_lines.append("| " + " | ".join(row_vals) + " |")
-                    table_summary = f"\n\n**Database Query Results:**\n\n" + "\n".join(md_table_lines)
+                    data_representation = "\n".join(md_table_lines)
                 else:
-                    table_summary = "\n\n*The database query returned 0 matching records.*"
+                    data_representation = "The database query returned 0 matching records."
+
+                table_requested = any(kw in query.lower() for kw in ["table", "tabular", "in a table", "as a table", "grid"])
+                format_directive = (
+                    "Format your response using a clean Markdown table since the user explicitly requested tabular format."
+                    if table_requested else
+                    "Deliver a direct, fluent, and well-structured answer in natural language with clear bullet points where appropriate. "
+                    "Do NOT dump or append raw database tables or column matrices."
+                )
 
                 synthesis_prompt = (
                     f"User Inquiry: {query}\n"
                     f"Executed SQL: {executed_sql}\n"
-                    f"Result Data:\n{table_summary}\n\n"
-                    f"Provide a clear, direct, and professional answer to the user's inquiry based on this query result. "
-                    f"State the exact customer name, identifier, or values retrieved."
+                    f"Database Query Results ({len(rows)} matching records):\n{data_representation}\n\n"
+                    f"Directives:\n"
+                    f"- {format_directive}\n"
+                    f"- Clearly state the exact customer names, identifiers, metrics, and pertinent attributes retrieved.\n"
+                    f"- Be concise, direct, and professional without unnecessary boilerplate."
                 )
 
                 yield ("status", {
@@ -352,20 +510,18 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 if hasattr(self.llm, "stream_text"):
                     for token in self.llm.stream_text(
                         synthesis_prompt,
-                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}. Provide clear, professional, and accurate answers directly answering the user inquiry based on the database records."
                     ):
                         answer += token
                         yield ("delta", {"content": token})
                 else:
                     answer = self.llm.generate_text(
                         synthesis_prompt,
-                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}."
+                        system_instruction=f"You are an enterprise data analyst assistant for {org_name}. Provide clear, professional, and accurate answers directly answering the user inquiry based on the database records."
                     )
                     yield ("delta", {"content": answer})
 
-                # Yield table summary markdown
-                yield ("delta", {"content": table_summary})
-                full_answer = f"{answer}\n{table_summary}"
+                full_answer = answer.strip()
 
                 yield ("status", {
                     "step": "synthesis",
@@ -374,6 +530,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                     "details": "Synthesis completed successfully.",
                     "status": "completed"
                 })
+
 
                 sources = [{
                     "source_name": f"{job.name} ({dialect.upper()} Database)",
@@ -399,18 +556,67 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
 
                 yield ("result", (full_answer, sources, True, 0.95))
             else:
-                logger.warning(f"[DYNAMIC SQL] Execution failed: {sql_result.get('error')}. Falling back.")
+                raw_err = sql_result.get('error', 'Execution error')
+                logger.warning(f"[DYNAMIC SQL] Execution failed: {raw_err}.")
+                
+                # Check if this was a cross-database query (e.g. transaction volume in core banking + loans in lending)
+                lower_q = query.lower()
+                is_cross_db = (
+                    any(k in lower_q for k in ["transaction", "transactions", "inflow", "deposit"]) and
+                    any(k in lower_q for k in ["loan", "loans", "facility", "facilities", "credit"])
+                )
+                
+                if is_cross_db:
+                    error_details = (
+                        "The requested inquiry spans two isolated database systems:\n"
+                        "- **Transaction activity and account balances** reside in the Core Banking database (`noros_core_banking_db`).\n"
+                        "- **Loan portfolios and credit facilities** reside in the Lending database (`noros_lending_db`).\n\n"
+                        "Because these systems run on disparate database engines, they cannot be joined directly in a single SQL query. "
+                        "Please query each system individually (for example, first request active loans from the lending system, then inspect 12-month transaction volumes for those specific accounts)."
+                    )
+                else:
+                    error_details = (
+                        f"I encountered a database execution issue while querying **{job.name}** ({dialect.upper()}): {raw_err}. "
+                        "The requested data could not be retrieved from the relational schema."
+                    )
+
                 yield ("status", {
                     "step": "sql_execution",
                     "stage": "sql",
-                    "title": "SQL Execution Failed",
-                    "details": f"Query error: {sql_result.get('error')}. Falling back to document RAG.",
+                    "title": "SQL Execution Error",
+                    "details": f"Query error: {raw_err}",
                     "status": "failed"
                 })
-                yield ("result", None)
+
+                yield ("delta", {"content": error_details})
+
+                sources = [{
+                    "source_name": f"{job.name} ({dialect.upper()} Database)",
+                    "filename": f"{job.name} ({dialect.upper()})",
+                    "chunk_id": "sql_error",
+                    "sql_query": sql_result.get("sql", ""),
+                    "row_count": 0,
+                    "relevance_score": 0.0,
+                    "preview": f"Database execution error: {raw_err}",
+                    "error": True,
+                    "database_name": job.name
+                }]
+                yield ("result", (error_details, sources, False, 0.0))
         except Exception as e:
-            logger.warning(f"[DYNAMIC SQL] Error: {e}. Falling back.")
-            yield ("result", None)
+            logger.warning(f"[DYNAMIC SQL] Exception in execute_stream: {e}.")
+            err_text = f"An error occurred while executing the database query against the relational system: {e}"
+            yield ("delta", {"content": err_text})
+            sources = [{
+                "source_name": "Relational Database Engine",
+                "filename": "database_error",
+                "chunk_id": "sql_exception",
+                "sql_query": "",
+                "row_count": 0,
+                "relevance_score": 0.0,
+                "preview": str(e),
+                "error": True
+            }]
+            yield ("result", (err_text, sources, False, 0.0))
 
     def execute(
         self,

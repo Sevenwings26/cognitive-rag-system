@@ -34,6 +34,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
 
   wings_ingestion_worker:
@@ -46,6 +53,13 @@ services:
       - ..:/app
     environment:
       - PYTHONPATH=/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     command: python -m celery -A modules.tasks.celery_app worker --loglevel=info
     env_file:
       - ../.env

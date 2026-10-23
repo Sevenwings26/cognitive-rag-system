@@ -15,14 +15,17 @@ class QueryCondenser:
     rewriting follow-up prompts into self-contained canonical queries with explicit entity bindings.
     """
 
-    REFERENTIAL_PATTERN = re.compile(
-        r"\b(he|him|his|she|her|hers|it|its|they|them|their|theirs|"
+    UNIVERSAL_REFERENTIAL_PATTERN = re.compile(
+        r"\b("
+        r"he|him|his|she|her|hers|it|its|they|them|their|theirs|"
         r"this|that|these|those|same|previous|prior|above|latter|former|"
-        r"what about|how about|and the|show his|find his|check his|get his|list his|"
-        r"any loans|any accounts|any transactions|does he|did he|is he|has he|"
-        r"the customer|this customer|that customer|same customer)\b",
+        r"what about|how about|and the|show|find|check|get|list|"
+        r"does (?:he|she|it|they)|did (?:he|she|it|they)|is (?:he|she|it|they)|has (?:he|she|it|they)|"
+        r"the same|that same|this same|that one|this one"
+        r")\b",
         re.IGNORECASE
     )
+    REFERENTIAL_PATTERN = UNIVERSAL_REFERENTIAL_PATTERN
 
     TOPIC_SHIFT_PATTERN = re.compile(
         r"\b(apart from|other than|besides|excluding|which other|what other|which else|what else|across all|in general|overall)\b",
@@ -36,15 +39,18 @@ class QueryCondenser:
 
     SYSTEM_INSTRUCTION = (
         "You are an expert conversational disambiguation engine and anaphora resolver for enterprise data and RAG systems.\n"
-        "Your task is to rewrite a user's follow-up question into a single, self-contained, standalone question by resolving all pronouns, ellipses, and ambiguous references using the provided conversation history and known entities.\n\n"
+        "Your task is to rewrite a user's follow-up question into a single, self-contained, canonical question "
+        "by resolving all pronouns, ellipses, and ambiguous references using the provided conversation history, known entities, and document context.\n\n"
         "RULES:\n"
-        "1. Replace pronouns ('he', 'his', 'she', 'her', 'it', 'they', 'this customer', 'that document') with explicit names and relevant entity context (e.g., 'customer Adebayo Adekunle (customer_id: 1008)').\n"
-        "2. Do NOT dump past search keys (such as previous BVN numbers or past query terms) into the rewritten question if they are not relevant to the new question. Keep the rewritten question natural and focused.\n"
-        "3. Preserve the exact intent, questions, system names, and domain concepts requested by the user. Do NOT modify terms like 'lending system', 'accounting', 'payments', 'core banking', etc. Do not answer the question; only rewrite it.\n"
+        "1. Replace pronouns ('he', 'his', 'she', 'her', 'it', 'they', 'this', 'that', 'that record', 'that document') with explicit names and known entity identifiers from Known Entities (e.g. 'subscriber John Doe (msisdn: 08012345678)', 'patient Alice Smith (mrn: 10492)', 'order ORD-9921', 'document travel_policy.pdf'). If an attribute is not present in Known Entities, do NOT fabricate an unknown ID; simply omit unknown attributes.\n"
+        "2. Do NOT dump past search keys or previous turn queries into the rewritten question if they are not relevant to the new question. Keep the rewritten question natural and focused.\n"
+        "3. Preserve the exact intent, questions, system names, cloud paths, and domain concepts requested by the user. Do not answer the question; only rewrite it.\n"
         "4. Output ONLY the standalone rewritten question. Do not include quotes, markdown fences, or conversational filler.\n"
-        "5. CRITICAL: NEVER insert or hallucinate specific database backend or schema names (e.g. noros_customer_db, noros_lending_db, postgres, mssql) into the rewritten question unless the user explicitly named them in their query. Retain the user's natural language domain terms (e.g., 'in our lending system', 'credit facilities', 'loans').\n"
-        "6. TOPIC SHIFTS & EXCLUSIONS: When the user asks an exclusionary or aggregate question (e.g., 'Apart from X, which other industries...', 'Which other organization are we serving?'), do NOT attach individual person names or customer IDs. Rewrite as a clear categorical inquiry (e.g., 'Apart from Dangote, which other corporate employers or industries do our customers belong to?').\n"
-        "7. SYSTEM INQUIRIES: If the user asks about system architecture, data sources, or connectors (e.g., 'How many data sources do we have on this system?'), NEVER bind customer IDs, BVNs, or banking entities. Keep the inquiry focused strictly on the system data sources."
+        "5. CRITICAL: NEVER insert or hallucinate specific database backend or schema names (e.g. postgres, mssql, internal DB names) into the rewritten question unless the user explicitly named them in their query. Retain the user's natural language domain terms.\n"
+        "6. TOPIC SHIFTS & EXCLUSIONS: When the user asks an exclusionary or aggregate question (e.g., 'Apart from X, which other...', 'In general across all...'), do NOT attach individual person names or specific entity IDs. Rewrite as a clear categorical inquiry.\n"
+        "7. SYSTEM INQUIRIES: If the user asks about system architecture, data sources, connectors, or cloud repositories (e.g., 'How many data sources do we have on this system?'), NEVER bind specific record entity IDs. Keep the inquiry focused strictly on the system data sources.\n"
+        "8. MULTI-SOURCE & CLOUD DOCUMENTS: When the user refers to an uploaded document, cloud storage path (S3, SharePoint, Google Drive), spreadsheet, vendor, or partner, resolve references to the specific document filename, cloud repository, or external entity named in the conversation history.\n"
+        "9. IDENTIFIER INTEGRITY: Never alter, truncate, or pad digits to any numeric or code identifier (e.g. MSISDN, MRN, VIN, BVN, UUID)."
     )
 
     @classmethod
@@ -58,6 +64,10 @@ class QueryCondenser:
         Fast-path heuristic: determines whether query rewriting is necessary.
         Bypasses LLM rewriting for first-turn queries and unambiguous self-contained prompts (0 ms overhead).
         """
+        # Pure conversational tokens / acknowledgements should never be rewritten
+        if re.match(r"^\s*(?:alright|all right|okay|ok|cool|great|got it|sure|noted|yes|no|yeah|yep|nope|fine|understood|thanks|thank you|hi|hello|bye|[,\s.!-]+)+$", query, re.IGNORECASE):
+            return False
+
         # If no history and no active entities/names in memory, no context exists to resolve
         if not history and not memory.active_entities and not memory.active_names:
             return False
@@ -125,7 +135,20 @@ class QueryCondenser:
                     history_lines.append(f"{role}: {content}")
 
             history_text = "\n".join(history_lines) if history_lines else "None"
-            memory_context = memory.get_summary_context(target_scope) or "None"
+
+            is_external_or_doc_inquiry = any(term in clean_q for term in ["vendor", "supplier", "provider", "partner", "document", "file", "policy", "s3", "sharepoint", "drive", "cloud"])
+            if is_external_or_doc_inquiry:
+                ext_lines = []
+                ext_list = getattr(memory, "active_external_entities", None) or getattr(memory, "active_vendors", None)
+                if ext_list:
+                    ext_lines.append(f"Referenced External Entities / Partners: {', '.join(ext_list)}")
+                if memory.active_documents:
+                    ext_lines.append(f"Referenced Documents: {', '.join(memory.active_documents)}")
+                if getattr(memory, "active_cloud_sources", None):
+                    ext_lines.append(f"Referenced Cloud Sources: {', '.join(memory.active_cloud_sources)}")
+                memory_context = "\n".join(ext_lines) if ext_lines else "None"
+            else:
+                memory_context = memory.get_summary_context(target_scope) or "None"
 
             prompt = (
                 f"=== Known Entities / Working Memory ===\n{memory_context}\n\n"
