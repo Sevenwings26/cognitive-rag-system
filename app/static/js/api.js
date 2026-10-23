@@ -69,6 +69,15 @@
         },
 
         logout: function (redirectUrl = '/enterprise/login') {
+            const token = this.getToken();
+            if (token) {
+                try {
+                    fetch('/enterprise/auth/logout', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    }).catch(() => {});
+                } catch (e) {}
+            }
             this.clearAuth();
             if (window.Toast) {
                 Toast.info('Signed out', 'You have been safely signed out.');

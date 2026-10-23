@@ -7,6 +7,14 @@ from modules.rag_core.domain.types import QueryPlan
 QueryExecutionPlan = QueryPlan
 
 class QueryPlanner:
+    SESSION_IDENTITY_PATTERNS = [
+        r"^\s*(who am i|what is my name|what is my role|who is logged in|my profile|my user info|about me)[\s.?!]*$",
+        r"\b(who\s+am\s+i|who\s+is\s+logged\s+in)\b",
+        r"\bwhat\s+(?:is\s+)?(?:the\s+name\s+of\s+)?my\s+(?:organization|company|org|employer|role|profile|details|info)\b",
+        r"\bwhat\s+organization\s+do\s+i\s+belong\s+to\b",
+        r"\bwhat\s+company\s+do\s+i\s+work\s+for\b"
+    ]
+
     CONVERSATIONAL_PATTERNS = [
         r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)\b",
         r"^\s*(who are you|what can you do|help me|how does this work|what is your name)\b",
@@ -48,6 +56,16 @@ class QueryPlanner:
     ) -> QueryPlan:
         clean_query = query.strip()
         lower_query = clean_query.lower()
+
+        is_session_identity = any(re.search(p, lower_query) for p in cls.SESSION_IDENTITY_PATTERNS)
+        if is_session_identity:
+            return QueryPlan(
+                is_conversational_only=True,
+                target_scopes=[],
+                sub_queries=[clean_query],
+                intent_category="SESSION_IDENTITY",
+                is_structured_sql=False
+            )
 
         is_system_meta = any(re.search(p, lower_query) for p in cls.SYSTEM_META_KEYWORDS)
         if is_system_meta:

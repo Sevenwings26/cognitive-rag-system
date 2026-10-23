@@ -14,6 +14,25 @@ from .base import BaseProbe, GPUInfo, GPUSummary
 
 logger = logging.getLogger("techyz.observatory.probes.gpu")
 
+# Common NVIDIA SMI binary candidate paths
+_NVIDIA_SMI_CANDIDATES = (
+    "nvidia-smi",
+    "/usr/bin/nvidia-smi",
+    "/usr/lib/wsl/lib/nvidia-smi",
+    "/usr/local/cuda/bin/nvidia-smi",
+)
+
+
+def _find_nvidia_smi() -> Optional[str]:
+    """Find the path to the nvidia-smi binary across common installation locations."""
+    for cand in _NVIDIA_SMI_CANDIDATES:
+        if shutil.which(cand):
+            return cand
+        if os.path.isabs(cand) and os.path.exists(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
 # Common ROCm SMI binary candidate paths
 _ROCM_SMI_CANDIDATES = (
     "rocm-smi",
@@ -271,6 +290,38 @@ class GPUInspector:
                 pynvml.nvmlShutdown()
             except Exception:
                 pass
+        elif method == "nvidia-smi":
+            smi_bin = _find_nvidia_smi()
+            if smi_bin:
+                try:
+                    res = subprocess.run(
+                        [smi_bin, "--query-gpu=index,memory.total,memory.free,utilization.gpu", "--format=csv,noheader,nounits"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        for line in res.stdout.strip().splitlines():
+                            parts = [p.strip() for p in line.split(",")]
+                            if len(parts) >= 3:
+                                idx_str, total_mb, free_mb = parts[:3]
+                                try:
+                                    dev_idx = int(idx_str)
+                                    f_gb = round(float(free_mb) / 1024.0, 2)
+                                    t_b = int(float(total_mb) * 1024 * 1024)
+                                    a_b = int(float(free_mb) * 1024 * 1024)
+                                    u_b = max(0, t_b - a_b)
+                                    nvidia_dynamic[dev_idx] = f_gb
+                                    nvidia_dynamic_bytes[dev_idx] = (t_b, u_b)
+                                except ValueError:
+                                    continue
+                                if len(parts) >= 4:
+                                    try:
+                                        nvidia_compute[dev_idx] = float(parts[3].replace("%", "").strip())
+                                    except ValueError:
+                                        nvidia_compute[dev_idx] = None
+                except Exception:
+                    pass
 
         for idx, item in enumerate(static_inventory):
             mem_type = item["memory_type"]
@@ -446,13 +497,14 @@ class GPUInspector:
     # Tier 2: NVIDIA SMI CLI
     # -------------------------------------------------------------------------
     def _probe_nvidia_smi(self) -> Tuple[List[GPUInfo], str]:
-        if not shutil.which("nvidia-smi"):
+        smi_bin = _find_nvidia_smi()
+        if not smi_bin:
             return [], "none"
 
         fields = "pci.bus_id,name,memory.total,memory.free,driver_version,gpu_uuid,utilization.gpu"
         try:
             res = subprocess.run(
-                ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+                [smi_bin, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
                 capture_output=True,
                 text=True,
                 timeout=5,

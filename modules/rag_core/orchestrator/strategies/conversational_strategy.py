@@ -48,9 +48,21 @@ class ConversationalStrategy(BaseRetrievalStrategy):
             "query": query
         }
 
+        user_display_name = user_context.email.split("@")[0].capitalize() if user_context.email else "User"
+        user_email = user_context.email or "N/A"
+        user_role_str = user_context.role.value if hasattr(user_context.role, "value") else str(user_context.role or "Member")
+
         system_instruction = (
-            f"You are a helpful and knowledgeable AI assistant for {org_name}. "
-            "Answer the user's question clearly, politely, and accurately using your general knowledge."
+            f"You are a helpful and knowledgeable AI assistant for {org_name}.\n\n"
+            f"ACTIVE SESSION CALLER IDENTITY:\n"
+            f"- Current User: {user_display_name}\n"
+            f"- Email: {user_email}\n"
+            f"- Role: {user_role_str}\n"
+            f"- Organization: {org_name}\n"
+            f"- Department: {dept_name or 'General'}\n\n"
+            "If the user asks about their own identity, name, role, organization, or company (e.g. 'Who am I?', 'What is the name of my organization?'), "
+            "provide a clear, direct, and helpful answer grounded strictly on this verified session identity. "
+            "For general questions or conversation, respond politely, helpfully, and accurately using your general knowledge."
         )
         temperature = 0.5
 

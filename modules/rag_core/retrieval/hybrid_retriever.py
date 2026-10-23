@@ -5,13 +5,23 @@ from qdrant_client.models import Filter
 from core.config import settings
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.providers.llm import BaseLLMService
+from modules.rag_core.providers.embeddings import BaseEmbeddingService, EmbeddingFactory
 
 logger = logging.getLogger("hybrid_retriever")
 
 class HybridRetriever:
-    def __init__(self, vector_store: VectorStoreService, llm_service: BaseLLMService):
-        self.vector_store = vector_store
+    def __init__(
+        self,
+        vector_store: Optional[VectorStoreService] = None,
+        llm_service: Optional[BaseLLMService] = None,
+        embedding_service: Optional[BaseEmbeddingService] = None
+    ):
+        self.vector_store = vector_store or VectorStoreService()
         self.llm = llm_service
+        self.embedding_service = (
+            embedding_service or
+            EmbeddingFactory.get_provider()
+        )
 
     def retrieve(
         self,
@@ -21,7 +31,7 @@ class HybridRetriever:
         score_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         threshold = score_threshold if score_threshold is not None else settings.DEFAULT_SCORE_THRESHOLD
-        query_vector = self.llm.get_embeddings(query)
+        query_vector = self.embedding_service.get_embeddings(query)
 
         hits = self.vector_store.search_vectors(
             query_vector=query_vector,

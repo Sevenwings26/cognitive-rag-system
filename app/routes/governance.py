@@ -7,6 +7,7 @@ from app.dependencies import get_db, get_current_user, require_role
 from modules.auth.domain.tokens import TokenData
 from modules.auth.domain.models import UserRole
 from modules.auth.repositories.user_repository import UserRepository
+from modules.auth.validators import validate_enterprise_email
 from modules.governance.repositories.governance_repository import GovernanceRepository
 from modules.governance.repositories.document_repository import DocumentRepository
 from modules.governance.services.audit_logger import AuditLogger
@@ -126,9 +127,10 @@ def provision_user(
     current_user: TokenData = Depends(require_role(["SUPER_ADMIN", "DEPT_ADMIN"])),
     db: Session = Depends(get_db)
 ):
-    existing = UserRepository.get_by_email(db, payload.email.strip())
+    email = validate_enterprise_email(payload.email)
+    existing = UserRepository.get_by_email(db, email)
     if existing:
-        raise HTTPException(status_code=400, detail="User with this email already exists")
+        raise HTTPException(status_code=400, detail=f"User with email '{email}' already exists")
 
     role_val = payload.role if hasattr(UserRole, payload.role) else "MEMBER"
     user_role = UserRole(role_val)
@@ -139,7 +141,7 @@ def provision_user(
     user = UserRepository.create_user(
         db=db,
         org_id=current_user.org_id,
-        email=payload.email.strip(),
+        email=email,
         password=payload.password,
         full_name=payload.full_name.strip(),
         role=user_role,

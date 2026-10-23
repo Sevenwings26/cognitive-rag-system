@@ -17,6 +17,7 @@ from modules.governance.services.audit_logger import AuditLogger
 from modules.connectors.parsers.factory import ParserFactory
 from modules.connectors.sources.file_connector import FileConnector
 from modules.rag_core.providers.llm import BaseLLMService, LLMFactory
+from modules.rag_core.providers.embeddings import BaseEmbeddingService, EmbeddingFactory
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.retrieval.security_filter import RAGSecurityFilterBuilder
 from modules.rag_core.retrieval.hybrid_retriever import HybridRetriever
@@ -53,21 +54,47 @@ class UnifiedRAGOrchestrator:
         llm_service: Optional[BaseLLMService] = None,
         vector_store: Optional[VectorStoreService] = None,
         reranker: Optional[CrossEncoderReranker] = None,
-        knowledge_registry: Optional[KnowledgeRegistry] = None
+        knowledge_registry: Optional[KnowledgeRegistry] = None,
+        embedding_service: Optional[BaseEmbeddingService] = None
     ):
         self.llm = llm_service or LLMFactory.get_provider()
+        self.embedding_service = (
+            embedding_service or
+            EmbeddingFactory.get_provider()
+        )
         self.vector_store = vector_store or VectorStoreService()
         self.reranker = reranker or CrossEncoderReranker()
         self.registry = knowledge_registry or KnowledgeRegistry()
-        self.hybrid_retriever = HybridRetriever(vector_store=self.vector_store, llm_service=self.llm)
+        self.hybrid_retriever = HybridRetriever(
+            vector_store=self.vector_store,
+            llm_service=self.llm,
+            embedding_service=self.embedding_service
+        )
         self.grounding_validator = GroundingValidator()
         self.prompt_engine = PromptEngine()
 
         # Modular Strategies
         self.conversational_strategy = ConversationalStrategy(self.llm, self.prompt_engine)
-        self.session_strategy = SessionDocumentStrategy(self.vector_store, self.llm, self.grounding_validator, self.prompt_engine)
-        self.enterprise_strategy = EnterpriseKnowledgeStrategy(self.vector_store, self.llm, self.reranker, self.grounding_validator, self.prompt_engine)
-        self.sql_strategy = DynamicSQLStrategy(self.vector_store, self.llm)
+        self.session_strategy = SessionDocumentStrategy(
+            self.vector_store,
+            self.llm,
+            self.grounding_validator,
+            self.prompt_engine,
+            embedding_service=self.embedding_service
+        )
+        self.enterprise_strategy = EnterpriseKnowledgeStrategy(
+            self.vector_store,
+            self.llm,
+            self.reranker,
+            self.grounding_validator,
+            self.prompt_engine,
+            embedding_service=self.embedding_service
+        )
+        self.sql_strategy = DynamicSQLStrategy(
+            self.vector_store,
+            self.llm,
+            embedding_service=self.embedding_service
+        )
         self.meta_strategy = SystemMetaStrategy()
 
     def execute_unified_query_stream(
@@ -151,6 +178,8 @@ class UnifiedRAGOrchestrator:
         target_desc = "Relational SQL Agent" if plan.is_structured_sql else ("Session Documents" if (scope == "session" or (has_session_documents and scope != "enterprise")) else ("Conversational" if plan.is_conversational_only else "Enterprise Knowledge Base"))
         if plan.intent_category == "SYSTEM_META":
             target_desc = "System Meta Registry (RBAC)"
+        elif plan.intent_category == "SESSION_IDENTITY":
+            target_desc = "Session Identity & Persona"
 
         yield ("status", {
             "step": "query_planning",
@@ -581,13 +610,14 @@ class UnifiedRAGOrchestrator:
 
         # 1. Batch / Parallelized Vector Embedding Generation
         embeddings = []
-        if hasattr(self.llm, "get_embeddings_batch"):
+        if hasattr(self.embedding_service, "get_embeddings_batch"):
             try:
-                embeddings = self.llm.get_embeddings_batch(chunks)
-            except Exception:
-                embeddings = [self.llm.get_embeddings(c) for c in chunks]
+                embeddings = self.embedding_service.get_embeddings_batch(chunks)
+            except Exception as emb_batch_err:
+                logger.warning(f"Batch embedding failed ({emb_batch_err}); falling back to sequential generation.")
+                embeddings = [self.embedding_service.get_embeddings(c) for c in chunks]
         else:
-            embeddings = [self.llm.get_embeddings(c) for c in chunks]
+            embeddings = [self.embedding_service.get_embeddings(c) for c in chunks]
 
         # 2. Prepare Points for Qdrant and Entities for PostgreSQL
         doc_scope = "session" if (session_id and session_id.strip()) else "enterprise"

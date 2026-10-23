@@ -177,15 +177,11 @@ class ObservatoryService:
         }
 
     def _count_active_sessions(self) -> Optional[int]:
-        """Count active token sessions from Redis. Returns None if Redis is down (never a fabricated number or false zero)."""
+        """Count active token sessions from Redis or in-memory fallback buffer."""
         try:
-            from core.redis_client import get_redis
-            r = get_redis()
-            if r is None:
-                return None
-            return sum(1 for _ in r.scan_iter(match="api_token:*", count=100))
+            return self.buffer.get_active_sessions_count()
         except Exception as exc:
-            logger.debug("Could not query active sessions from Redis: %s", exc)
+            logger.debug("Could not query active sessions: %s", exc)
             return None
 
 

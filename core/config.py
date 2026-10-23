@@ -21,6 +21,13 @@ try:
         LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
         GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
         GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
+
+        # Dedicated Embedding Layer Configuration (Decoupled from LLM_PROVIDER)
+        EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "ollama")
+        EMBEDDING_MODEL: Optional[str] = os.getenv("EMBEDDING_MODEL")
+        EMBEDDING_BASE_URL: Optional[str] = os.getenv("EMBEDDING_BASE_URL")
+        EMBEDDING_API_KEY: Optional[str] = os.getenv("EMBEDDING_API_KEY")
 
         VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://host.docker.internal:8000/v1")
         VLLM_API_KEY: str = os.getenv("VLLM_API_KEY", "not-needed")
@@ -30,7 +37,7 @@ try:
         OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434/v1")
         OLLAMA_API_KEY: str = os.getenv("OLLAMA_API_KEY", "ollama")
         OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:12b")
-        OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+        OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
 
         OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
         OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -46,6 +53,10 @@ try:
 
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
         STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
+
+        # Enterprise Identity & Domain Policies
+        ENFORCE_ENTERPRISE_EMAIL_DOMAINS: bool = os.getenv("ENFORCE_ENTERPRISE_EMAIL_DOMAINS", "true").lower() in ("true", "1", "yes")
+        enforce_enterprise_email_domains: bool = True
 
         # Observatory APM & Hardware Telemetry Settings
         OBSERVATORY_ENABLED: bool = os.getenv("OBSERVATORY_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -90,6 +101,13 @@ except ImportError:
         LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
         GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
         GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
+
+        # Dedicated Embedding Layer Configuration (Decoupled from LLM_PROVIDER)
+        EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "ollama")
+        EMBEDDING_MODEL: Optional[str] = os.getenv("EMBEDDING_MODEL")
+        EMBEDDING_BASE_URL: Optional[str] = os.getenv("EMBEDDING_BASE_URL")
+        EMBEDDING_API_KEY: Optional[str] = os.getenv("EMBEDDING_API_KEY")
 
         VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://host.docker.internal:8000/v1")
         VLLM_API_KEY: str = os.getenv("VLLM_API_KEY", "not-needed")
@@ -99,7 +117,7 @@ except ImportError:
         OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434/v1")
         OLLAMA_API_KEY: str = os.getenv("OLLAMA_API_KEY", "ollama")
         OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:12b")
-        OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+        OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
 
         OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
         OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -115,6 +133,10 @@ except ImportError:
 
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
         STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/app/storage/staging")
+
+        # Enterprise Identity & Domain Policies
+        ENFORCE_ENTERPRISE_EMAIL_DOMAINS: bool = os.getenv("ENFORCE_ENTERPRISE_EMAIL_DOMAINS", "true").lower() in ("true", "1", "yes")
+        enforce_enterprise_email_domains: bool = True
 
         # Observatory APM & Hardware Telemetry Settings
         OBSERVATORY_ENABLED: bool = os.getenv("OBSERVATORY_ENABLED", "true").lower() in ("true", "1", "yes")

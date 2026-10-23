@@ -13,6 +13,7 @@ from modules.governance.services.audit_logger import AuditLogger
 from modules.connectors.security.sql_guard import SQLSecurityGuard
 from modules.rag_core.tools.sql_agent import DynamicSQLAgent
 from modules.rag_core.providers.llm import BaseLLMService
+from modules.rag_core.providers.embeddings import BaseEmbeddingService, EmbeddingFactory
 from modules.rag_core.retrieval.vector_store import VectorStoreService
 from modules.rag_core.orchestrator.strategies.base import BaseRetrievalStrategy
 from modules.rag_core.context.models import EntityScope
@@ -69,9 +70,18 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
         }
     }
 
-    def __init__(self, vector_store: VectorStoreService, llm_service: BaseLLMService):
+    def __init__(
+        self,
+        vector_store: VectorStoreService,
+        llm_service: BaseLLMService,
+        embedding_service: Optional[BaseEmbeddingService] = None
+    ):
         self.vector_store = vector_store
         self.llm = llm_service
+        self.embedding_service = (
+            embedding_service or
+            EmbeddingFactory.get_provider()
+        )
 
     def _resolve_target_job(
         self,
@@ -219,7 +229,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id))
             ]
         )
-        query_vector = self.llm.get_embeddings(query)
+        query_vector = self.embedding_service.get_embeddings(query)
         schema_hits = self.vector_store.search_vectors(
             query_vector=query_vector,
             search_filter=schema_filter,
@@ -338,7 +348,7 @@ class DynamicSQLStrategy(BaseRetrievalStrategy):
                 "status": "in_progress"
             })
 
-            query_vector = self.llm.get_embeddings(query)
+            query_vector = self.embedding_service.get_embeddings(query)
             probe_hits = self.vector_store.search_vectors(
                 query_vector=query_vector,
                 search_filter=Filter(must=[FieldCondition(key="org_id", match=MatchValue(value=user_context.org_id))]),
